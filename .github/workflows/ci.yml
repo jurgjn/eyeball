@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - run: npm ci
+
+      - run: npm run typecheck
+
+      - run: npm run build
+
+      # Packaging (not publishing) exercises the exact artifact a release
+      # would produce, including the native duckdb/better-sqlite3 binaries
+      # npm ci just installed for this OS — catches manifest/.vscodeignore
+      # breakage without needing any credentials.
+      - run: npx vsce package --out eyeball-${{ matrix.os }}.vsix
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eyeball-${{ matrix.os }}
+          path: eyeball-${{ matrix.os }}.vsix
+          retention-days: 7

@@ -1,0 +1,84 @@
+{
+  "name": "eyeball",
+  "displayName": "Eyeball",
+  "description": "Read-only viewer for large CSV, TSV, Parquet and SQLite data files, including gzip-compressed variants.",
+  "version": "0.1.0",
+  "publisher": "jurgjn",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jurgjn/eyeball"
+  },
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Data Science",
+    "Visualization",
+    "Other"
+  ],
+  "keywords": [
+    "csv",
+    "tsv",
+    "parquet",
+    "sqlite",
+    "data viewer",
+    "positron"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [],
+  "contributes": {
+    "customEditors": [
+      {
+        "viewType": "eyeball.dataViewer",
+        "displayName": "Eyeball Data Viewer",
+        "priority": "option",
+        "selector": [
+          { "filenamePattern": "*.csv" },
+          { "filenamePattern": "*.tsv" },
+          { "filenamePattern": "*.csv.gz" },
+          { "filenamePattern": "*.tsv.gz" },
+          { "filenamePattern": "*.parquet" },
+          { "filenamePattern": "*.sqlite" },
+          { "filenamePattern": "*.sqlite3" },
+          { "filenamePattern": "*.db" },
+          { "filenamePattern": "*.db3" }
+        ]
+      }
+    ],
+    "commands": [
+      {
+        "command": "eyeball.openFile",
+        "title": "Eyeball: Open Data File...",
+        "category": "Eyeball"
+      }
+    ],
+    "menus": {
+      "explorer/context": [
+        {
+          "command": "eyeball.openFile",
+          "when": "resourceFilename =~ /\\.(csv|tsv|parquet|sqlite3?|db3?)(\\.gz)?$/i",
+          "group": "navigation"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.js --production",
+    "watch": "node esbuild.js --watch",
+    "typecheck": "tsc -p . --noEmit",
+    "package": "vsce package"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.9.1",
+    "duckdb": "^1.1.3"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^20.17.9",
+    "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^3.2.1",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.2"
+  }
+}

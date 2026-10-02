@@ -1,0 +1,31 @@
+.vscode/**
+src/**
+scripts/**
+.github/**
+esbuild.js
+tsconfig.json
+*.map
+.gitignore
+**/*.ts
+**/*.md
+!README.md
+node_modules/.bin/**
+
+# duckdb ships a prebuilt binary (node_modules/duckdb/lib/binding/*.node) plus
+# JS glue; the full C++ amalgamation source and test suite are only needed to
+# build from source when no prebuild matches, which the packaged extension
+# never does.
+node_modules/duckdb/src/**
+node_modules/duckdb/test/**
+node_modules/duckdb/examples/**
+node_modules/duckdb/vendor/**
+node_modules/duckdb/scripts/**
+node_modules/duckdb/*.py
+node_modules/duckdb/*.gyp*
+node_modules/duckdb/Makefile
+node_modules/duckdb/tsconfig.json
+
+# same story for better-sqlite3: keep the compiled binary, drop the sqlite
+# amalgamation source it's built from.
+node_modules/better-sqlite3/deps/**
+node_modules/better-sqlite3/src/**

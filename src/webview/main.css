@@ -1,0 +1,142 @@
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--vscode-font-family, sans-serif);
+  font-size: var(--vscode-font-size, 13px);
+  color: var(--vscode-editor-foreground);
+  background: var(--vscode-editor-background);
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+#toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--vscode-panel-border, #444);
+  flex: 0 0 auto;
+  font-size: 12px;
+}
+
+#file-name {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+#status {
+  margin-left: auto;
+  opacity: 0.8;
+  white-space: nowrap;
+}
+
+#table-select {
+  background: var(--vscode-dropdown-background);
+  color: var(--vscode-dropdown-foreground);
+  border: 1px solid var(--vscode-dropdown-border, transparent);
+}
+
+#error-banner {
+  background: var(--vscode-inputValidation-errorBackground, #5a1d1d);
+  color: var(--vscode-inputValidation-errorForeground, #fff);
+  border-bottom: 1px solid var(--vscode-inputValidation-errorBorder, #be1100);
+  padding: 6px 10px;
+  flex: 0 0 auto;
+  white-space: pre-wrap;
+}
+
+#grid-container {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+#grid-header {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--vscode-panel-border, #444);
+  overflow: hidden;
+  background: var(--vscode-editor-background);
+}
+
+#grid-scroll {
+  flex: 1 1 auto;
+  overflow: auto;
+  position: relative;
+}
+
+#grid-spacer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+}
+
+#grid-rows {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+}
+
+.row {
+  display: grid;
+}
+
+.header-cell {
+  padding: 4px 8px;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-right: 1px solid var(--vscode-panel-border, #444);
+}
+
+.header-cell:hover {
+  background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.05));
+}
+
+.header-cell.sort-asc::after {
+  content: ' \25B2';
+}
+
+.header-cell.sort-desc::after {
+  content: ' \25BC';
+}
+
+.data-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 22px;
+}
+
+.data-row.odd {
+  background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.03));
+}
+
+.cell {
+  padding: 2px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-right: 1px solid var(--vscode-panel-border, transparent);
+  line-height: 18px;
+}
+
+.cell.null-value {
+  opacity: 0.5;
+  font-style: italic;
+}
