@@ -21,7 +21,7 @@ Builds of every commit are available as artifacts of the [CI runs](https://githu
 ## Features
 
 - Opens `.parquet`, `.parq` and `.pq` files, and SQLite databases (`.sqlite`, `.sqlite3`, `.db`,
-  `.db3`, `.s3db`, `.sl3`), as a custom editor (double-click in the explorer).
+  `.db3`, `.s3db`, `.sl3`), in a read-only viewer (double-click in the explorer).
 - Virtual grid in both directions, with smooth scrolling for any number of rows and columns.
 - All Parquet types, including nested lists, structs and maps, decimals at full precision,
   timestamps at full (nanosecond) precision, intervals and binary data. Files from pyarrow,
@@ -42,7 +42,7 @@ Builds of every commit are available as artifacts of the [CI runs](https://githu
 - Fast on network file systems (NFS, Lustre, GPFS): many reads are issued at once, and a
   progress bar shows how far reading and counting rows has got.
 - Works over Remote SSH, WSL and in containers: the extension runs where the file is, and
-  only the visible values are sent to the editor.
+  only the visible values are sent to the viewer.
 
 ## Usage
 
@@ -63,7 +63,7 @@ Row numbers start at 0, like in pandas and polars.
 Commands:
 
 - **Eyeball: Open Parquet File or SQLite Database...** opens files through a file dialog.
-- **Open with Eyeball** in the explorer context menu, for when another editor is the default.
+- **Open with Eyeball** in the explorer context menu, for when another viewer or editor is the default.
 
 Settings:
 
@@ -163,7 +163,11 @@ number (`0.1.0-dev.42`) so that each build installs as an update.
 
 To make a release:
 
-1. Update `CHANGELOG.md`.
+1. In `CHANGELOG.md` (in the [Keep a Changelog](https://keepachangelog.com/) format), rename
+   `## [Unreleased]` to the version and date, e.g. `## [0.1.0] - 2026-12-01`, and add an empty
+   `## [Unreleased]` above it. At the bottom, point `[Unreleased]` at `compare/v0.1.0...HEAD` and
+   add a link for the new version (`releases/tag/v0.1.0` for the first release,
+   `compare/vPREVIOUS...v0.1.0` after that).
 2. Publish a GitHub release with a new tag `vX.Y.Z`, e.g. `gh release create v0.1.0 --generate-notes`.
    CI takes the version from the tag, runs the tests, and attaches `eyeball-X.Y.Z.vsix` to the release.
 3. Set the version on `main` to the next `-dev` version.
