@@ -1,0 +1,7 @@
+# Python packages used to generate the test files (test/fixtures/*.py)
+numpy
+pandas
+pyarrow>=15
+polars>=1.0
+duckdb>=1.0
+fastparquet

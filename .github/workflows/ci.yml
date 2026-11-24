@@ -1,0 +1,104 @@
+# Tests and packages the extension on every push and pull request (the VSIX is kept as a
+# workflow artifact), and publishes it when a GitHub release is published: the VSIX is
+# attached to the release, and also published to the VS Code Marketplace and Open VSX once
+# the VSCE_PAT and OVSX_PAT secrets are set.
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'release' }}
+
+jobs:
+  test:
+    name: Typecheck and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: test/requirements.txt
+      - run: npm ci
+      - run: npm run typecheck
+      - run: pip install -r test/requirements.txt
+      - name: Generate test files
+        run: |
+          python test/fixtures/make_fixtures.py "$RUNNER_TEMP/data"
+          python test/fixtures/make_sqlite_fixtures.py "$RUNNER_TEMP/data"
+      - name: Compare values with pyarrow and sqlite3
+        run: node test/check.mjs "$RUNNER_TEMP/data"
+
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Set the version
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = release ]; then
+            # releases take their version from the tag: v1.2.3 -> 1.2.3
+            version="${TAG#v}"
+          else
+            # other builds get the run number, so that each build is an update: 0.1.0-dev.42
+            version="$(node -p "require('./package.json').version").$GITHUB_RUN_NUMBER"
+          fi
+          npm version "$version" --no-git-tag-version --allow-same-version
+      - name: Package
+        run: npx vsce package --no-dependencies
+      - uses: actions/upload-artifact@v4
+        with:
+          name: eyeball-vsix
+          path: '*.vsix'
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [test, package]
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      # registry tokens are optional: publishing to a registry is skipped while its secret is unset
+      VSCE_PAT: ${{ secrets.VSCE_PAT }}
+      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+      # registries only accept plain major.minor.patch versions
+      REGISTRY_RELEASE: ${{ !github.event.release.prerelease && !contains(github.event.release.tag_name, '-') }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: eyeball-vsix
+      - name: Attach the VSIX to the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG" ./*.vsix --clobber --repo "$GITHUB_REPOSITORY"
+      - name: Publish to the VS Code Marketplace
+        if: env.VSCE_PAT != '' && env.REGISTRY_RELEASE == 'true'
+        run: npx --yes @vscode/vsce@3 publish --packagePath ./*.vsix
+      - name: Publish to Open VSX
+        if: env.OVSX_PAT != '' && env.REGISTRY_RELEASE == 'true'
+        run: npx --yes ovsx publish ./*.vsix
