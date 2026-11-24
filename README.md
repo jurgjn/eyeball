@@ -9,6 +9,13 @@ it has been counted.
 
 ![icon](media/icon.png)
 
+## Installing
+
+Download `eyeball-<version>.vsix` from the [latest release](https://github.com/jurgjn/eyeball/releases)
+and install it with **Extensions: Install from VSIX...** in VS Code, VSCodium or Positron, or from
+the command line with `code --install-extension eyeball-<version>.vsix` (or `codium`/`positron`).
+Builds of every commit are available as artifacts of the [CI runs](https://github.com/jurgjn/eyeball/actions).
+
 ## Features
 
 - Opens `.parquet`, `.parq` and `.pq` files, and SQLite databases (`.sqlite`, `.sqlite3`, `.db`,
@@ -106,13 +113,11 @@ npm run typecheck
 npm run package      # creates eyeball-<version>.vsix
 ```
 
-Install the package with **Extensions: Install from VSIX...**, or from the command line with
-`code --install-extension eyeball-<version>.vsix` (or `codium`/`positron`).
-
 Tests compare the values read by Eyeball with pyarrow and Python's sqlite3 for a set of
 generated files:
 
 ```sh
+pip install -r test/requirements.txt
 python test/fixtures/make_fixtures.py /tmp/eyeball-data [--big]
 python test/fixtures/make_sqlite_fixtures.py /tmp/eyeball-data [--big]
 node test/check.mjs /tmp/eyeball-data [--perf]
@@ -130,3 +135,29 @@ openvscode-server --install-extension eyeball-*.vsix
 openvscode-server --port 3123 --without-connection-token &
 node test/e2e.mjs http://127.0.0.1:3123 /tmp/eyeball-data /tmp/eyeball-shots
 ```
+
+## Releasing
+
+`main` carries the next version with a `-dev` suffix (`0.1.0-dev`). The [CI workflow](.github/workflows/ci.yml)
+tests and packages every push; the VSIX of each run is kept as an artifact, versioned with the run
+number (`0.1.0-dev.42`) so that each build installs as an update.
+
+To make a release:
+
+1. Update `CHANGELOG.md`.
+2. Publish a GitHub release with a new tag `vX.Y.Z`, e.g. `gh release create v0.1.0 --generate-notes`.
+   CI takes the version from the tag, runs the tests, and attaches `eyeball-X.Y.Z.vsix` to the release.
+3. Set the version on `main` to the next `-dev` version.
+
+Releases marked as pre-releases on GitHub, or with a pre-release tag such as `v0.2.0-beta.1`, are
+only attached to the GitHub release.
+
+Publishing to the extension registries is set up but off until their tokens are added as
+repository secrets (**Settings > Secrets and variables > Actions**); from then on, releases are
+also published there:
+
+- VS Code Marketplace: create the publisher `jurgjn` at https://marketplace.visualstudio.com/manage
+  and an Azure DevOps personal access token with the **Marketplace (Manage)** scope, and add the
+  token as `VSCE_PAT`.
+- Open VSX (VSCodium, Positron): sign in at https://open-vsx.org, create an access token, create the
+  namespace with `npx ovsx create-namespace jurgjn -p <token>`, and add the token as `OVSX_PAT`.
