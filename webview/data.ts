@@ -1,4 +1,4 @@
-import type { BlockRequest, CellText, HostMessage, WebviewMessage } from '../src/protocol'
+import { BLOCK_ROWS, type BlockRequest, type CellText, type HostMessage, type WebviewMessage } from '../src/protocol'
 
 /** Cached values of one column for one block of rows, or the error that prevented loading them. */
 export type Entry = CellText[] | { error: string }
@@ -27,6 +27,18 @@ export class DataStore {
     this.lastRequest = ''
     this.loading = false
     clearTimeout(this.retryTimer)
+    this.version++
+  }
+
+  /** Forget blocks that were loaded before all their rows were counted. */
+  dropPartial(): void {
+    for (const [key, { entry, size }] of this.entries) {
+      if (Array.isArray(entry) && entry.length < BLOCK_ROWS) {
+        this.entries.delete(key)
+        this.total -= size
+      }
+    }
+    this.lastRequest = ''
     this.version++
   }
 

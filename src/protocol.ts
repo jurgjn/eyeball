@@ -12,12 +12,35 @@ export interface ColumnMeta {
   numeric: boolean
 }
 
+/** A table in a file (Parquet files have one; SQLite databases have several). */
+export interface TableEntry {
+  name: string
+  /** "table", "view", "virtual table", ... */
+  kind: string
+  /** False for entries that can't be shown, such as SQLite views. */
+  supported: boolean
+  note?: string
+}
+
 export interface TableInit {
+  format: 'parquet' | 'sqlite'
   fileName: string
   fileSize: number
+  tables: TableEntry[]
+  /** Name of the table shown. */
+  table: string
   numRows: number
-  numRowGroups: number
+  /** numRows is a lower bound; rowCount messages follow while rows are being counted. */
+  counting: boolean
   columns: ColumnMeta[]
+}
+
+/** A block of the file info panel: key-value items, collapsible long values, and/or a table. */
+export interface InfoSection {
+  title?: string
+  items?: KeyValue[]
+  details?: KeyValue[]
+  table?: string[][]
 }
 
 /** A cell value as sent to the webview: display text, or null for a null value. */
@@ -45,7 +68,8 @@ export type HostMessage =
   }
   | { type: 'cell'; requestId: number; row: number; col: number; text: string; isNull: boolean }
   | { type: 'columnInfo'; col: number; items: KeyValue[] }
-  | { type: 'fileInfo'; items: KeyValue[]; keyValueMetadata: KeyValue[]; rowGroups: string[][] }
+  | { type: 'fileInfo'; sections: InfoSection[] }
+  | { type: 'rowCount'; numRows: number; counting: boolean }
   | { type: 'status'; message: string }
 
 // webview -> host
@@ -64,3 +88,4 @@ export type WebviewMessage =
   | { type: 'copyText'; text: string }
   | { type: 'columnInfo'; col: number }
   | { type: 'fileInfo' }
+  | { type: 'selectTable'; name: string }

@@ -300,3 +300,15 @@ export function toJson(value: unknown, pretty: boolean, maxChars: number): strin
   }
   return out
 }
+
+export function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  const units = ['KB', 'MB', 'GB', 'TB']
+  let value = bytes
+  let unit = -1
+  do {
+    value /= 1024
+    unit++
+  } while (value >= 1024 && unit < units.length - 1)
+  return `${value.toFixed(value < 10 ? 2 : value < 100 ? 1 : 0)} ${units[unit]}`
+}

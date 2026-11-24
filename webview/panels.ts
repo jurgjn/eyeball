@@ -1,6 +1,6 @@
 // Side panel (column list, column details, file details), cell detail panel and context menu.
 
-import type { ColumnMeta, HostMessage, KeyValue, WebviewMessage } from '../src/protocol'
+import type { ColumnMeta, HostMessage, InfoSection, KeyValue, WebviewMessage } from '../src/protocol'
 import type { Grid } from './grid'
 
 export function el<K extends keyof HTMLElementTagNameMap>(tag: K, className = '', text?: string): HTMLElementTagNameMap[K] {
@@ -290,23 +290,25 @@ export class Sidebar {
     this.details.replaceChildren(keyValueTable(items))
   }
 
-  onFileInfo(msg: Extract<HostMessage, { type: 'fileInfo' }>): void {
-    const parts: HTMLElement[] = [keyValueTable(msg.items)]
-    if (msg.keyValueMetadata.length) {
-      parts.push(el('h3', '', 'Key-value metadata'))
-      for (const { key, value } of msg.keyValueMetadata) {
+  onFileInfo(sections: InfoSection[]): void {
+    const parts: HTMLElement[] = []
+    for (const section of sections) {
+      if (section.title) parts.push(el('h3', '', section.title))
+      if (section.items) parts.push(keyValueTable(section.items))
+      for (const { key, value } of section.details ?? []) {
         const details = el('details')
         details.append(el('summary', '', `${key} (${fmt.format(value.length)} chars)`), el('pre', '', value))
         parts.push(details)
       }
+      if (section.table) {
+        const table = el('table', 'rowgroups')
+        section.table.forEach((cells, i) => {
+          const tr = table.insertRow()
+          for (const cell of cells) tr.append(el(i ? 'td' : 'th', '', cell))
+        })
+        parts.push(table)
+      }
     }
-    parts.push(el('h3', '', 'Row groups'))
-    const table = el('table', 'rowgroups')
-    msg.rowGroups.forEach((cells, i) => {
-      const tr = table.insertRow()
-      for (const cell of cells) tr.append(el(i ? 'td' : 'th', '', cell))
-    })
-    parts.push(table)
     this.filePane.replaceChildren(...parts)
   }
 }

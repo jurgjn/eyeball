@@ -89,6 +89,7 @@ export class Grid {
 
   numRows = 0
   columns: ColumnMeta[] = []
+  private tableKey = ''
   /** Indices of the displayed columns, in order. */
   viewCols: number[] = []
   readonly hidden = new Set<number>()
@@ -214,13 +215,19 @@ export class Grid {
     this.rowNumW = Math.max(44, Math.ceil(this.measure(this.numberFormat.format(Math.max(0, this.numRows - 1)), this.cellFont)) + 20)
   }
 
-  /** Show a new table. Keeps the view (position, widths, hidden columns) if the columns are unchanged. */
-  setTable(numRows: number, columns: ColumnMeta[]): void {
-    const sameColumns = columns.length === this.columns.length &&
+  /**
+   * Show a table. Keeps the view (position, widths, hidden columns) when the same table is
+   * shown again (e.g. after the file changed) with the same columns.
+   */
+  setTable(key: string, numRows: number, columns: ColumnMeta[]): void {
+    const sameColumns = key === this.tableKey && columns.length === this.columns.length &&
       columns.every((c, i) => c.name === this.columns[i].name && c.type === this.columns[i].type)
+    this.tableKey = key
     this.numRows = numRows
     this.columns = columns
     if (!sameColumns) {
+      // header cells cache their labels by column index; a new table reuses the indices
+      for (const cell of this.headerPool) cell.col = -1
       this.hidden.clear()
       this.userSized.clear()
       this.fitted.clear()
@@ -245,6 +252,17 @@ export class Grid {
     this.viewW = -1
     this.invalidate()
     this.events.activeChanged()
+  }
+
+  /** More rows became available (rows are still being counted). */
+  setRowCount(numRows: number): void {
+    if (numRows === this.numRows) return
+    this.numRows = numRows
+    const width = this.rowNumW
+    this.updateRowNumWidth()
+    if (width !== this.rowNumW) this.viewW = -1
+    this.clampSelection()
+    this.invalidate()
   }
 
   private updateViewCols(): void {
@@ -299,15 +317,20 @@ export class Grid {
     this.invalidate()
   }
 
+  /** Recompute column positions after widths changed, without moving what the user is looking at. */
   private relayoutKeepingView(): void {
-    // keep the first visible column where it is
     const n = this.viewCols.length
+    const { bodyW } = this.bodySize()
+    const activeVisible = n > 0 && this.offsets[this.active.vc] >= this.vx && this.offsets[this.active.vc + 1] <= this.vx + bodyW
+    // keep the first visible column where it is
     const c0 = clamp(upperBound(this.offsets, n, this.vx) - 1, 0, n)
     const delta = this.vx - this.offsets[c0]
     const col = this.viewCols[c0]
     this.recomputeOffsets()
     const vc = col === undefined ? -1 : this.viewCols.indexOf(col)
     if (vc >= 0) this.vx = this.offsets[vc] + Math.min(delta, this.widths[col])
+    // ... but if the active cell was in view (e.g. after End), keep it in view
+    if (activeVisible) this.scrollIntoView(this.active)
   }
 
   private fitWidth(col: number, values: (string | null)[]): number {

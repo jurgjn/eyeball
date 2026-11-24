@@ -1,24 +1,32 @@
-# Eyeball: Parquet viewer for VS Code, VSCodium and Positron
+# Eyeball: Parquet and SQLite viewer for VS Code, VSCodium and Positron
 
-Eyeball opens Parquet files in a scrollable grid. It is built for large files, with hundreds of
-millions of rows or tens of thousands of columns, and only reads the parts of the file that
-are on screen. Opening a file reads just its footer. Scrolling to any row, even in the middle of
-a single huge row group, decodes only the pages that hold the visible rows.
+Eyeball opens Parquet files and SQLite databases in a scrollable grid. It is built for large
+files, with hundreds of millions of rows or tens of thousands of columns, and only reads the
+parts of the file that are on screen. Opening a Parquet file reads just its footer, and
+scrolling to any row, even in the middle of a single huge row group, decodes only the pages
+that hold the visible rows. SQLite tables open immediately, and any row can be reached once
+it has been counted.
 
 ![icon](media/icon.png)
 
 ## Features
 
-- Opens `.parquet`, `.parq` and `.pq` files as a custom editor (double-click in the explorer).
+- Opens `.parquet`, `.parq` and `.pq` files, and SQLite databases (`.sqlite`, `.sqlite3`, `.db`,
+  `.db3`, `.s3db`, `.sl3`), as a custom editor (double-click in the explorer).
 - Virtual grid in both directions, with smooth scrolling for any number of rows and columns.
 - All Parquet types, including nested lists, structs and maps, decimals at full precision,
   timestamps at full (nanosecond) precision, intervals and binary data. Files from pyarrow,
   polars, DuckDB, fastparquet and other writers; Snappy, gzip, zstd, Brotli and LZ4 compression.
+- SQLite: all tables of a database, including `WITHOUT ROWID` tables, `STRICT` tables and the
+  `sqlite_schema` table; committed changes still in the write-ahead log (`-wal` file); UTF-16
+  databases; any page size.
 - Column list with filtering (substring or `/regex/`), jumping to a column, and showing or
   hiding columns.
-- Column details from the file metadata: physical and logical types, compression, encodings,
-  sizes, null counts and min/max statistics.
-- File details: row groups, sizes, writer and key-value metadata (e.g. the pandas or Arrow schema).
+- Column details: for Parquet, physical and logical types, compression, encodings, sizes, null
+  counts and min/max statistics; for SQLite, declared type, affinity, keys, defaults and
+  generated columns.
+- File details: for Parquet, row groups, sizes, writer and key-value metadata (e.g. the pandas
+  or Arrow schema); for SQLite, the database header and the schema with its SQL.
 - Cell detail panel with the full value; nested values are pretty-printed.
 - Copy a cell or range as tab-separated text (up to 2 million cells), with or without the header.
 - Reloads automatically when the file changes on disk.
@@ -43,7 +51,7 @@ Row numbers start at 0, like in pandas and polars.
 
 Commands:
 
-- **Eyeball: Open Parquet File...** opens files through a file dialog.
+- **Eyeball: Open Parquet File or SQLite Database...** opens files through a file dialog.
 - **Open with Eyeball** in the explorer context menu, for when another editor is the default.
 
 Settings:
@@ -52,12 +60,15 @@ Settings:
 - `eyeball.maxCellChars` (default 300): longer values are truncated in the grid, but shown in
   full in the cell detail panel and copied in full.
 
-If another extension also opens Parquet files (Positron's Data Explorer, for example), VS Code
-asks which one to use. To make Eyeball the default, add this to your settings:
+If another extension also opens these files (Positron's Data Explorer, or another SQLite
+viewer), VS Code asks which one to use. To make Eyeball the default, add this to your settings:
 
 ```json
-"workbench.editorAssociations": { "*.parquet": "eyeball.parquet" }
+"workbench.editorAssociations": { "*.parquet": "eyeball.parquet", "*.db": "eyeball.sqlite" }
 ```
+
+Eyeball also opens `.db` files by default. If yours aren't SQLite databases, associate `*.db`
+with another editor (`"*.db": "default"` for the text editor).
 
 ## How it works
 
@@ -69,12 +80,22 @@ page headers on demand, stopping at the rows that are needed. The webview asks f
 128 rows of the visible columns. The extension decodes the pages that hold those rows and
 sends back the formatted text. Decoded pages are kept in an LRU cache.
 
+SQLite databases are read directly from the [file format](https://www.sqlite.org/fileformat2.html),
+also without native dependencies. A SQL engine can't jump to the n-th row of a table (`OFFSET n`
+steps through all the rows before it), so Eyeball lists a table's leaf pages from its interior
+b-tree pages, counts the rows of each leaf in the background, and maps row positions to leaf
+pages. The first rows show immediately, and the row count grows while the rest are counted.
+Column names and types come from the `CREATE TABLE` statements. Committed pages in the
+write-ahead log take precedence over the database file, as in SQLite.
+
 Requests that are superseded while scrolling are dropped, so fast scrolling through a large
 file stays responsive.
 
-Limitations: encrypted files and files whose column chunks live in other files are not
-supported. Files outside the local file system (in virtual workspaces) are read into memory
-in full.
+Limitations: encrypted Parquet files and Parquet files whose column chunks live in other files
+are not supported. Because Eyeball has no SQL engine, SQLite views, virtual tables (e.g. FTS;
+their data is in the tables named after them) and the values of `VIRTUAL` generated columns
+can't be shown. Files outside the local file system (in virtual workspaces) are read into
+memory in full.
 
 ## Building
 
@@ -88,14 +109,17 @@ npm run package      # creates eyeball-<version>.vsix
 Install the package with **Extensions: Install from VSIX...**, or from the command line with
 `code --install-extension eyeball-0.1.0.vsix` (or `codium`/`positron`).
 
-Tests compare the values read by Eyeball with pyarrow for a set of generated files:
+Tests compare the values read by Eyeball with pyarrow and Python's sqlite3 for a set of
+generated files:
 
 ```sh
 python test/fixtures/make_fixtures.py /tmp/eyeball-data [--big]
+python test/fixtures/make_sqlite_fixtures.py /tmp/eyeball-data [--big]
 node test/check.mjs /tmp/eyeball-data [--perf]
 ```
 
-`--big` adds multi-GB files (30 million rows, 5000 columns); `--perf` times random access on them.
+`--big` adds large files (30 million rows and 5000 columns of Parquet, 5 million rows of
+SQLite); `--perf` times random access on them.
 
 `test/e2e.mjs` drives the packaged extension in [openvscode-server](https://github.com/gitpod-io/openvscode-server)
 with Playwright (`npm install playwright`): it opens the fixtures, scrolls, jumps, filters columns,

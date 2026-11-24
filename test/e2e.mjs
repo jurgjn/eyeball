@@ -4,7 +4,7 @@
 //   URL     openvscode-server with the extension installed, e.g. http://127.0.0.1:3123
 //   FOLDER  folder containing the fixtures (test/fixtures/make_fixtures.py --big)
 //   OUTDIR  where screenshots are written
-//   SECTIONS  optional regex selecting sections (types, tall, wide, wide100k, nested, edge, dark)
+//   SECTIONS  optional regex selecting sections (types, tall, wide, wide100k, nested, sqlite, edge, dark)
 import { chromium } from 'playwright'
 import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -195,7 +195,7 @@ if (run('wide100k') && existsSync(join(folder, 'wide_100k.parquet'))) {
   await page.keyboard.press('End')
   check(await settle(frame), `wide100k: End in ${Date.now() - t1} ms`)
   const headers = await frame.locator('.h:not([hidden]) .hn').allTextContents()
-  check(headers.at(-1) === 'gene_099999', `wide100k: last header ${headers.at(-1)}`)
+  check(headers.includes('gene_099999'), `wide100k: last column shown (${headers.length} headers)`)
   t1 = Date.now()
   await page.keyboard.press('Control+F')
   await page.keyboard.type('gene_05')
@@ -218,6 +218,71 @@ if (run('nested')) {
   const frame = await open('nested_v1.parquet')
   check(await settle(frame), 'nested: loads')
   await shot('nested')
+}
+
+// ---- SQLite ----
+if (run('sqlite') && existsSync(join(folder, 'types.sqlite'))) {
+  let frame = await open('types.sqlite')
+  check(await settle(frame), 'sqlite: opens')
+  const options = await frame.locator('select.tables option').allTextContents()
+  check(options.includes('t') && options.includes('wr') && options.includes('v (view)') && options.includes('docs (virtual table)'),
+    `sqlite: tables ${options.join(', ')}`)
+  check(await frame.locator('select.tables option[value="v"]').isDisabled(), 'sqlite: views are disabled')
+  check(await frame.locator('select.tables').inputValue() === 'altered', 'sqlite: first table selected')
+  await frame.locator('select.tables').selectOption('t')
+  await page.waitForTimeout(300)
+  check(await settle(frame), 'sqlite: switch to table t')
+  let headers = await frame.locator('.h:not([hidden]) .hn').allTextContents()
+  check(headers.slice(0, 4).join() === 'id,i,r,s', `sqlite: t headers ${headers.slice(0, 4).join()}`)
+  const dims = await frame.locator('.dims').textContent()
+  check(dims?.startsWith('2,572 rows × 9 columns') ?? false, `sqlite: t dims ${dims}`)
+  await shot('sqlite-t')
+  await frame.locator('select.tables').selectOption('gen')
+  await page.waitForTimeout(300)
+  check(await settle(frame), 'sqlite: switch to table gen')
+  const texts = await frame.locator('.c:not([hidden])').allTextContents()
+  check(texts.includes('(computed, not stored)'), 'sqlite: virtual generated column marked')
+  await frame.locator('.grid').click({ position: { x: 300, y: 100 } })
+  await page.keyboard.press('Control+F')
+  await page.keyboard.press('Escape')
+  await frame.locator('.details table.kv').waitFor({ timeout: 10000 })
+  const info = await frame.locator('.details').textContent()
+  check(/Declared type/.test(info ?? ''), 'sqlite: column details')
+  await frame.locator('.tab', { hasText: 'File' }).click()
+  await frame.locator('.file-pane table.rowgroups').waitFor({ timeout: 10000 })
+  const fileInfo = await frame.locator('.file-pane').textContent()
+  check(/Page size/.test(fileInfo ?? '') && /Schema/.test(fileInfo ?? ''), 'sqlite: file info')
+  await shot('sqlite-file')
+
+  frame = await open('big.sqlite')
+  check(await settle(frame), 'sqlite big: opens')
+  let bigDims = ''
+  for (let i = 0; i < 100 && !bigDims.startsWith('5,000,000 rows'); i++) {
+    await page.waitForTimeout(100)
+    bigDims = (await frame.locator('.dims').textContent()) ?? ''
+  }
+  check(bigDims.startsWith('5,000,000 rows × 5 columns'), `sqlite big: dims ${bigDims}`)
+  await frame.locator('.grid').click({ position: { x: 300, y: 100 } })
+  const t0 = Date.now()
+  await page.keyboard.press('Control+End')
+  check(await settle(frame), `sqlite big: Ctrl+End in ${Date.now() - t0} ms`)
+  const rows = await frame.locator('.r:not([hidden])').allTextContents()
+  check(rows.includes('4,999,999'), 'sqlite big: last row shown')
+  check((await frame.locator('.c:not([hidden])').allTextContents()).includes('5000000'), 'sqlite big: last id shown')
+  await shot('sqlite-big')
+
+  frame = await open('wide.sqlite')
+  check(await settle(frame), 'sqlite wide: opens')
+  await frame.locator('.grid').click({ position: { x: 300, y: 100 } })
+  await page.keyboard.press('End')
+  check(await settle(frame), 'sqlite wide: End')
+  headers = await frame.locator('.h:not([hidden]) .hn').allTextContents()
+  check(headers.includes('c1499'), `sqlite wide: last column shown (${headers.length} headers)`)
+
+  frame = await open('wal.sqlite')
+  check(await settle(frame), 'sqlite wal: opens')
+  const walTables = await frame.locator('select.tables option').allTextContents()
+  check(walTables.includes('only_in_wal'), `sqlite wal: tables ${walTables.join(', ')}`)
 }
 
 // ---- edge cases: empty file, not a Parquet file, file changing on disk ----

@@ -10,3 +10,6 @@ First release.
 - Virtual grid for any number of rows and columns.
 - Column list with filtering and hiding, column statistics, file and row group metadata.
 - Cell detail panel, copying ranges as tab-separated text.
+- SQLite databases: all tables (including WITHOUT ROWID and STRICT tables), read directly from
+  the file format with rows counted in the background; the write-ahead log is applied; table
+  selector, column and schema details.

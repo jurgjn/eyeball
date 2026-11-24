@@ -18,6 +18,9 @@ let table: TableInit | undefined
 const app = document.getElementById('app')!
 const toolbar = el('div', 'toolbar')
 const title = el('span', 'title')
+const tableSelect = el('select', 'tables')
+tableSelect.title = 'Table'
+tableSelect.hidden = true
 const dims = el('span', 'dims')
 const spacer = el('span', 'grow')
 const gotoInput = el('input', 'goto')
@@ -31,7 +34,7 @@ const fileButton = el('button', 'toggle', 'File info')
 fileButton.title = 'File metadata and row groups'
 const detailButton = el('button', 'toggle', 'Cell value')
 detailButton.title = 'Show the full value of the selected cell (Enter)'
-toolbar.append(title, dims, spacer, gotoInput, columnsButton, fileButton, detailButton)
+toolbar.append(title, tableSelect, dims, spacer, gotoInput, columnsButton, fileButton, detailButton)
 
 const main = el('div', 'main')
 const center = el('div', 'center')
@@ -96,6 +99,30 @@ function updateToggles(): void {
   detailButton.classList.toggle('active', detail.visible)
 }
 sidebar.el.addEventListener('click', updateToggles)
+
+tableSelect.addEventListener('change', () => {
+  post({ type: 'selectTable', name: tableSelect.value })
+  grid.focus()
+})
+
+/** Fill the table selector (SQLite databases); hidden for files with a single table. */
+function showTables(init: TableInit): void {
+  tableSelect.hidden = init.tables.length < 2
+  tableSelect.replaceChildren(...init.tables.map(entry => {
+    const option = el('option', '', entry.supported ? entry.name : `${entry.name} (${entry.kind})`)
+    option.value = entry.name
+    option.disabled = !entry.supported
+    if (entry.note) option.title = entry.note
+    return option
+  }))
+  tableSelect.value = init.table
+}
+
+function showDims(): void {
+  if (!table) return
+  const rows = table.counting ? `${fmt.format(table.numRows)}+ rows (counting)` : plural(table.numRows, 'row')
+  dims.textContent = `${rows} × ${plural(table.columns.length, 'column')} · ${formatBytes(table.fileSize)}`
+}
 
 gotoInput.addEventListener('keydown', e => {
   if (e.key === 'Enter') {
@@ -229,9 +256,10 @@ window.addEventListener('message', (event: MessageEvent<HostMessage>) => {
       overlay.hidden = true
       title.textContent = table.fileName
       title.title = table.fileName
-      dims.textContent = `${plural(table.numRows, 'row')} × ${plural(table.columns.length, 'column')} · ${formatBytes(table.fileSize)}`
+      showTables(table)
+      showDims()
       store.reset()
-      grid.setTable(table.numRows, table.columns)
+      grid.setTable(table.table, table.numRows, table.columns)
       sidebar.setColumns(table.columns)
       detail.reset()
       if (detail.visible) showDetail(false)
@@ -243,6 +271,15 @@ window.addEventListener('message', (event: MessageEvent<HostMessage>) => {
     case 'fatal':
       table = undefined
       showOverlay(`Could not open this file:\n${msg.message}`, true)
+      break
+    case 'rowCount':
+      if (!table) break
+      table.numRows = msg.numRows
+      table.counting = msg.counting
+      store.dropPartial()
+      grid.setRowCount(msg.numRows)
+      showDims()
+      onActiveChanged()
       break
     case 'data':
       store.receive(msg)
@@ -259,7 +296,7 @@ window.addEventListener('message', (event: MessageEvent<HostMessage>) => {
       sidebar.onColumnInfo(msg.col, msg.items)
       break
     case 'fileInfo':
-      sidebar.onFileInfo(msg)
+      sidebar.onFileInfo(msg.sections)
       break
     case 'status':
       setStatus(msg.message)

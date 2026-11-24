@@ -13,12 +13,13 @@ import { DEFAULT_PARSERS, convert } from 'hyparquet/src/convert.js'
 import { decompressPage } from 'hyparquet/src/datapage.js'
 import { readRleBitPackedHybrid } from 'hyparquet/src/encoding.js'
 import { getMaxRepetitionLevel } from 'hyparquet/src/schema.js'
-import type { CellText, ColumnMeta, KeyValue } from '../protocol'
+import type { ColumnMeta, InfoSection, KeyValue, TableEntry } from '../protocol'
 import { compressors } from './compressors'
-import { DateValue, TimestampValue, UuidValue, formatCopy, formatDisplay, formatFull, type ValueFormat } from './format'
+import { DateValue, TimestampValue, UuidValue, formatBytes, formatDisplay, type ValueFormat } from './format'
 import { LruCache, estimateSize } from './lru'
 import { isNumeric, leafDecoding, typeLabel, valueFormat } from './schema'
 import type { ByteSource } from './source'
+import { TableReader, type TableFile } from './types'
 
 type ColumnDecoder = Parameters<typeof readPage>[2]
 
@@ -89,7 +90,36 @@ interface ChunkIndex {
 const HEADER_WINDOW = 1 << 16
 let tableCounter = 0
 
-export class ParquetTable {
+/** A Parquet file: one table. */
+export class ParquetFile implements TableFile {
+  readonly format = 'parquet'
+  readonly defaultTable = 'data'
+  readonly tables: TableEntry[] = [{ name: 'data', kind: 'table', supported: true }]
+
+  private constructor(private readonly table: ParquetTable) {}
+
+  static async open(source: ByteSource, cache: LruCache<unknown>): Promise<ParquetFile> {
+    return new ParquetFile(await ParquetTable.open(source, cache))
+  }
+
+  get size(): number {
+    return this.table.source.size
+  }
+
+  async openTable(): Promise<ParquetTable> {
+    return this.table
+  }
+
+  fileInfo(fileName: string): InfoSection[] {
+    return this.table.fileInfo(fileName)
+  }
+
+  dispose(): void {
+    this.table.dispose()
+  }
+}
+
+export class ParquetTable extends TableReader {
   readonly numRows: number
   readonly columns: Column[]
   readonly leaves: Leaf[]
@@ -103,6 +133,7 @@ export class ParquetTable {
     readonly metadata: FileMetaData,
     private readonly cache: LruCache<unknown>,
   ) {
+    super()
     const schema = parquetSchema(metadata)
     this.leaves = []
     this.columns = schema.children.map((node, index) => {
@@ -156,7 +187,8 @@ export class ParquetTable {
   }
 
   /** Drop cached pages and close the file. */
-  dispose(): void {
+  override dispose(): void {
+    super.dispose()
     this.cache.deletePrefix(this.prefix)
     this.chunkIndexes.clear()
     this.pending.clear()
@@ -179,30 +211,6 @@ export class ParquetTable {
       start = groupEnd
     }
     return out
-  }
-
-  /** Display text for rows [start, end) of a column. */
-  async displayColumn(col: number, start: number, end: number, maxChars: number): Promise<CellText[]> {
-    const values = await this.readColumn(col, start, end)
-    const { format } = this.columns[col]
-    return values.map(v => formatDisplay(v, format, maxChars))
-  }
-
-  async fullValue(row: number, col: number): Promise<{ text: string; isNull: boolean }> {
-    const [value] = await this.readColumn(col, row, row + 1)
-    return { text: formatFull(value, this.columns[col].format), isNull: value === null || value === undefined }
-  }
-
-  /** Tab-separated text of a rectangular range, quoted like spreadsheet applications do. */
-  async copyText(rowStart: number, rowEnd: number, cols: number[], header: boolean): Promise<string> {
-    const columns = await Promise.all(cols.map(c => this.readColumn(c, rowStart, rowEnd)))
-    const quote = (text: string) => /[\t\n\r"]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
-    const lines: string[] = []
-    if (header) lines.push(cols.map(c => quote(this.columns[c].name)).join('\t'))
-    for (let r = 0; r < rowEnd - rowStart; r++) {
-      lines.push(cols.map((c, i) => quote(formatCopy(columns[i][r], this.columns[c].format) ?? '')).join('\t'))
-    }
-    return lines.join('\n')
   }
 
   rowGroupAt(row: number): number {
@@ -556,7 +564,7 @@ export class ParquetTable {
     return items
   }
 
-  fileInfo(fileName: string): { items: KeyValue[]; keyValueMetadata: KeyValue[]; rowGroups: string[][] } {
+  fileInfo(fileName: string): InfoSection[] {
     const m = this.metadata
     let compressed = 0
     let uncompressed = 0
@@ -594,7 +602,10 @@ export class ParquetTable {
       key,
       value: value === undefined ? '' : value.length > 20000 ? value.slice(0, 20000) + '…' : value,
     }))
-    return { items, keyValueMetadata, rowGroups }
+    const sections: InfoSection[] = [{ items }]
+    if (keyValueMetadata.length) sections.push({ title: 'Key-value metadata', details: keyValueMetadata })
+    sections.push({ title: 'Row groups', table: rowGroups })
+    return sections
   }
 }
 
@@ -621,16 +632,4 @@ function compare(a: unknown, b: unknown): number {
   const x = String(a)
   const y = String(b)
   return x < y ? -1 : x > y ? 1 : 0
-}
-
-export function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`
-  const units = ['KB', 'MB', 'GB', 'TB']
-  let value = bytes
-  let unit = -1
-  do {
-    value /= 1024
-    unit++
-  } while (value >= 1024 && unit < units.length - 1)
-  return `${value.toFixed(value < 10 ? 2 : value < 100 ? 1 : 0)} ${units[unit]}`
 }
