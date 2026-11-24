@@ -238,6 +238,26 @@ for suffix in ("", "-wal", "-shm"):
     Path(str(src) + suffix).unlink(missing_ok=True)
 write_expected(path, tables)
 
+# ---- rowids: rows counted with an index, which is much smaller than the table (one row per
+# 512-byte leaf page). Without gaps in the rowids, rows are then found by rowid; with gaps,
+# the table's rows are counted
+path = out / "rowids.sqlite"
+con = fresh(path, page_size=512)
+for name in ("dense", "gaps"):
+    con.execute(f"CREATE TABLE {name} (key TEXT PRIMARY KEY, n INTEGER, payload BLOB)")
+con.executemany("INSERT INTO dense (rowid, key, n, payload) VALUES (?, ?, ?, ?)",
+                ((1000 + k, f"k{k:05d}", k, rnd.randbytes(400 + k % 40)) for k in range(6000)))
+con.executemany("INSERT INTO gaps (key, n, payload) VALUES (?, ?, ?)",
+                ((f"k{k:05d}", k, rnd.randbytes(400 + k % 40)) for k in range(6000)))
+con.execute("DELETE FROM gaps WHERE n % 10 = 3")
+con.commit()
+tables = [
+    {**table_expectations(con, "dense", "rowid"), "lookup": "rowid"},
+    {**table_expectations(con, "gaps", "rowid"), "lookup": "position"},
+]
+con.close()
+write_expected(path, tables)
+
 # ---- wide: 1500 columns
 path = out / "wide.sqlite"
 con = fresh(path)

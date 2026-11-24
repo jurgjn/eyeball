@@ -3,8 +3,11 @@
 //
 // SQL can't seek to the n-th row (OFFSET steps through all rows before it), so instead we
 // list the leaf pages of a table's b-tree from its interior pages, count the cells of each
-// leaf in the background, and map row positions to leaf pages with prefix sums. Committed
-// pages in the write-ahead log (-wal file) take precedence over the database file.
+// leaf in the background, and map row positions to leaf pages with prefix sums. If an index
+// of the table is much smaller than the table, its entries are counted instead: when there
+// are as many rows as the span of the rowids, the rowids have no gaps, and row n is found
+// directly as rowid min + n. Committed pages in the write-ahead log (-wal file) take
+// precedence over the database file.
 
 import type { InfoSection, KeyValue, TableEntry } from '../protocol'
 import { Deferred, bytesToText, formatBytes } from './format'
@@ -14,18 +17,29 @@ import { parseCreateTable, rowidAlias, type SqlColumn, type SqlTable } from './s
 import { TableReader, type ReaderColumn, type TableFile } from './types'
 
 export const SQLITE_MAGIC = 'SQLite format 3\u0000'
-/** Bytes of a value read for the grid; longer values are cut. */
+/** Bytes of each value read for the grid; longer values are cut (and shown with their size). */
+const DISPLAY_PREFIX = 1024
+/** Bytes of a record read for the grid when its header doesn't fit on the b-tree page. */
 const DISPLAY_CAP = 1 << 20
 /** Bytes of a value read for the detail panel and copying. */
 const FULL_CAP = 64 << 20
-const READ_CONCURRENCY = 64
 /** Largest read when counting rows from runs of adjacent leaf pages. */
 const MAX_RUN_BYTES = 8 << 20
+/** Units (leaf pages) counted at once, at most. */
+const MAX_BATCH = 1024
+/** Count with an index only for tables with at least this many leaf pages... */
+const INDEX_MIN_LEAVES = 2048
+/** ...and only if the index has at most this fraction of them. */
+const INDEX_MAX_RATIO = 0.25
 
 const PAGE_INTERIOR_INDEX = 2
 const PAGE_INTERIOR_TABLE = 5
 const PAGE_LEAF_INDEX = 10
 const PAGE_LEAF_TABLE = 13
+
+/** Unit kinds in a b-tree walk; cells >= 0 are entries of interior index pages. */
+const LEAF = -1
+const SUBTREE = -2
 
 /** A REAL value. Shown with a decimal point even when integral, as SQLite does. */
 export class RealValue extends Deferred {
@@ -96,6 +110,27 @@ function toNumber(value: bigint): number | bigint {
 function serialSize(type: number): number {
   if (type >= 12) return Math.floor((type - 12) / 2)
   return [0, 1, 2, 3, 4, 6, 8, 8, 0, 0, 0, 0][type]
+}
+
+/**
+ * Bytes of a record to read for the grid: all of its values, each cut after DISPLAY_PREFIX
+ * bytes. Without overflow pages for the rest of large values, a screenful of a table with
+ * large blobs is read in a fraction of the time.
+ */
+function displayBytes(local: Uint8Array, payloadSize: number): number {
+  const [headerSize, n] = readVarint(local, 0)
+  // a header that doesn't fit on the page (thousands of columns): read most of the record
+  if (headerSize > local.length) return Math.min(payloadSize, DISPLAY_CAP)
+  let body = headerSize
+  let want = headerSize
+  for (let p = n; p < headerSize;) {
+    const [type, m] = readVarint(local, p)
+    p += m
+    const size = serialSize(type)
+    want = Math.max(want, body + Math.min(size, DISPLAY_PREFIX))
+    body += size
+  }
+  return Math.min(payloadSize, want)
 }
 
 /** Header offset of a b-tree page (page 1 starts with the 100-byte file header). */
@@ -180,6 +215,62 @@ interface Layout {
   rowidColumn: number
 }
 
+/**
+ * A b-tree down to the level above its leaves (the bottom interior level), whose pages are
+ * read as the walk over the leaves gets to them.
+ */
+interface Spine {
+  depth: number
+  /**
+   * The bottom interior level in order: its pages (cell SUBTREE), and for index b-trees the
+   * entries of the interior pages above, in between (cell >= 0). For a b-tree of depth 1, the
+   * root leaf (cell LEAF).
+   */
+  pages: number[]
+  cells: number[]
+  /** Pages in the bottom interior level. */
+  subtrees: number
+  /** Children of its first page; with subtrees, an estimate of the number of leaf pages. */
+  fanout: number
+}
+
+/** Consecutive units of a b-tree: leaf pages (cell LEAF) and entries of interior index pages (cell >= 0). */
+interface Units {
+  pages: number[]
+  cells: number[]
+  /** Fraction of the b-tree walked once these units are counted. */
+  progress: number
+}
+
+interface CountedUnits extends Units {
+  /** Rows in each unit: the cells of a leaf page, or 1 for an interior entry. */
+  counts: number[]
+}
+
+/** A leaf page of a table b-tree, with the bounds (low, high] of its rowids from the interior pages. */
+interface RowidLeaf {
+  pgno: number
+  low: number
+  high: number
+}
+
+/** An interior page of a table b-tree: child pages, and the largest rowid in each but the last. */
+interface Interior {
+  children: number[]
+  keys: number[]
+}
+
+const estimatedLeaves = (spine: Spine) => spine.subtrees * spine.fanout || 1
+
+/** Bytes up to the end of the last complete UTF-8 character. */
+function completeUtf8(bytes: Uint8Array): Uint8Array {
+  let lead = bytes.length - 1
+  while (lead > 0 && bytes.length - lead < 4 && (bytes[lead] & 0xc0) === 0x80) lead--
+  const byte = bytes[lead]
+  const length = byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1
+  return lead >= 0 && bytes.length - lead < length ? bytes.subarray(0, lead) : bytes
+}
+
 function layoutFor(table: SqlTable): Layout {
   const stored = table.columns.map((_, i) => i).filter(i => table.columns[i].generated !== 'virtual')
   let order = stored
@@ -261,9 +352,9 @@ export class SqliteFile implements TableFile {
       withoutRowid: false,
       strict: false,
     })
-    const units = await this.enumerate(1)
-    for (let u = 0; u < units.pages.length; u++) {
-      for (const row of await this.decodeLeaf(units.pages[u], layout, FULL_CAP)) {
+    const leaves = await this.listLeaves(1)
+    for (const rows of await Promise.all(leaves.map(pgno => this.decodeLeaf(pgno, layout, true)))) {
+      for (const row of rows) {
         this.schema.push({
           type: String(row[0] ?? ''),
           name: String(row[1] ?? ''),
@@ -341,29 +432,34 @@ export class SqliteFile implements TableFile {
 
   // ---- pages ----
 
-  async readPage(pgno: number): Promise<Uint8Array> {
+  /**
+   * A page of the database. Pages read for the screen are cached (records are read again for
+   * each column when copying, and the cells of a row for the detail panel); pages read in the
+   * background, for counting rows, are not, so that they don't push out the rows on screen.
+   */
+  readPage(pgno: number, background = false): Promise<Uint8Array> {
+    if (background) return this.loadPage(pgno, true)
+    return this.cached(`${this.prefix}p${pgno}`, () => this.loadPage(pgno, false))
+  }
+
+  private async loadPage(pgno: number, background: boolean): Promise<Uint8Array> {
     if (pgno < 1 || (this.pages && pgno > this.pages)) throw new Error(`page ${pgno} is outside the database (${this.pages} pages)`)
     const walOffset = this.wal?.frames.get(pgno)
-    if (walOffset !== undefined) return this.wal!.source.read(walOffset, walOffset + this.pageSize)
+    if (walOffset !== undefined) return this.wal!.source.read(walOffset, walOffset + this.pageSize, background)
     const start = (pgno - 1) * this.pageSize
     if (start + this.pageSize > this.source.size) {
       throw new Error(`page ${pgno} is beyond the end of the file; the database may be truncated`)
     }
-    return this.source.read(start, start + this.pageSize)
+    return this.source.read(start, start + this.pageSize, background)
   }
 
-  async readPages(pgnos: number[]): Promise<Uint8Array[]> {
-    const out: Uint8Array[] = new Array(pgnos.length)
-    for (let i = 0; i < pgnos.length; i += READ_CONCURRENCY) {
-      const chunk = pgnos.slice(i, i + READ_CONCURRENCY)
-      const pages = await Promise.all(chunk.map(p => this.readPage(p)))
-      pages.forEach((page, k) => (out[i + k] = page))
-    }
-    return out
+  readPages(pgnos: number[], background = false): Promise<Uint8Array[]> {
+    // the byte source limits how many reads run at once
+    return Promise.all(pgnos.map(pgno => this.readPage(pgno, background)))
   }
 
   /** Number of cells in each of the given leaf pages, reading runs of adjacent pages at once. */
-  async leafCellCounts(pgnos: number[]): Promise<Map<number, number>> {
+  async leafCellCounts(pgnos: number[], background = false): Promise<Map<number, number>> {
     const counts = new Map<number, number>()
     const check = (page: Uint8Array, at: number, pgno: number) => {
       const type = page[at]
@@ -373,8 +469,6 @@ export class SqliteFile implements TableFile {
     const fromFile: number[] = []
     const fromWal: number[] = []
     for (const pgno of pgnos) (this.wal?.frames.has(pgno) ? fromWal : fromFile).push(pgno)
-    const walPages = await this.readPages(fromWal)
-    walPages.forEach((page, i) => check(page, headerOffset(fromWal[i]), fromWal[i]))
     // group pages that are close together in the file into single reads
     const sorted = [...new Set(fromFile)].sort((a, b) => a - b)
     const runs: number[][] = []
@@ -384,77 +478,253 @@ export class SqliteFile implements TableFile {
       if (run && pgno - run[run.length - 1] <= 4 && pgno - run[0] < maxPages) run.push(pgno)
       else runs.push([pgno])
     }
-    for (let i = 0; i < runs.length; i += 16) {
-      await Promise.all(runs.slice(i, i + 16).map(async run => {
+    await Promise.all([
+      ...fromWal.map(async pgno => check(await this.readPage(pgno, background), headerOffset(pgno), pgno)),
+      ...runs.map(async run => {
         const first = run[0]
-        const bytes = await this.source.read((first - 1) * this.pageSize, run[run.length - 1] * this.pageSize)
+        const bytes = await this.source.read((first - 1) * this.pageSize, run[run.length - 1] * this.pageSize, background)
         for (const pgno of run) check(bytes, (pgno - first) * this.pageSize + headerOffset(pgno), pgno)
-      }))
-    }
+      }),
+    ])
     return counts
   }
 
-  /**
-   * The b-tree under root in order: leaf pages (cell -1) and, for index b-trees
-   * (WITHOUT ROWID tables), the entries of interior pages (cell >= 0) between them.
-   */
-  async enumerate(root: number): Promise<{ pages: Int32Array; cells: Int32Array; depth: number }> {
-    const SUBTREE = -2
-    let pages = [root]
-    let cells = [SUBTREE]
-    let depth = 1
-    for (;;) {
-      const subtrees: number[] = []
-      for (let i = 0; i < pages.length; i++) if (cells[i] === SUBTREE) subtrees.push(pages[i])
-      if (!subtrees.length) break
-      // all leaves of a SQLite b-tree are at the same depth
-      const first = await this.readPage(subtrees[0])
-      const firstType = first[headerOffset(subtrees[0])]
-      if (firstType === PAGE_LEAF_TABLE || firstType === PAGE_LEAF_INDEX) {
-        cells = cells.map(c => c === SUBTREE ? -1 : c)
-        break
+  // ---- b-trees ----
+
+  /** Children of an interior page in order, with the entries between them for index b-trees. */
+  private expandInterior(pgno: number, page: Uint8Array, childCell: number, pages: number[], cells: number[]): void {
+    const h = headerOffset(pgno)
+    const type = page[h]
+    if (type !== PAGE_INTERIOR_TABLE && type !== PAGE_INTERIOR_INDEX) {
+      throw new Error(`page ${pgno} should be an interior b-tree page (type ${type})`)
+    }
+    const n = u16(page, h + 3)
+    for (let c = 0; c < n; c++) {
+      pages.push(u32(page, u16(page, h + 12 + 2 * c)))
+      cells.push(childCell)
+      if (type === PAGE_INTERIOR_INDEX) {
+        pages.push(pgno)
+        cells.push(c)
       }
-      const read = await this.readPages(subtrees)
+    }
+    pages.push(u32(page, h + 8))
+    cells.push(childCell)
+  }
+
+  /** The b-tree under root down to its bottom interior level. */
+  async spine(root: number, background = false): Promise<Spine> {
+    // all leaves of a SQLite b-tree are at the same depth: follow the first children down
+    let depth = 1
+    let fanout = 1
+    for (let pgno = root; ; depth++) {
+      // SQLite never builds b-trees deeper than 20 levels; deeper means a corrupt (cyclic) tree
+      if (depth > 20) throw new Error(`b-tree at page ${root} is too deep; the database may be corrupt`)
+      const page = await this.readPage(pgno, background)
+      const h = headerOffset(pgno)
+      const type = page[h]
+      if (type === PAGE_LEAF_TABLE || type === PAGE_LEAF_INDEX) break
+      if (type !== PAGE_INTERIOR_TABLE && type !== PAGE_INTERIOR_INDEX) {
+        throw new Error(`page ${pgno} should be a b-tree page (type ${type})`)
+      }
+      const n = u16(page, h + 3)
+      fanout = n + 1
+      pgno = n ? u32(page, u16(page, h + 12)) : u32(page, h + 8)
+    }
+    let pages = [root]
+    let cells = [depth === 1 ? LEAF : SUBTREE]
+    for (let level = 1; level < depth - 1; level++) {
+      const subtrees = pages.filter((_, i) => cells[i] === SUBTREE)
+      const read = await this.readPages(subtrees, background)
       const nextPages: number[] = []
       const nextCells: number[] = []
       let k = 0
       for (let i = 0; i < pages.length; i++) {
-        if (cells[i] !== SUBTREE) {
+        if (cells[i] === SUBTREE) {
+          this.expandInterior(pages[i], read[k++], SUBTREE, nextPages, nextCells)
+        } else {
           nextPages.push(pages[i])
           nextCells.push(cells[i])
-          continue
         }
-        const pgno = pages[i]
-        const page = read[k++]
-        const h = headerOffset(pgno)
-        const type = page[h]
-        if (type !== PAGE_INTERIOR_TABLE && type !== PAGE_INTERIOR_INDEX) {
-          throw new Error(`page ${pgno} should be an interior b-tree page (type ${type})`)
-        }
-        const n = u16(page, h + 3)
-        for (let c = 0; c < n; c++) {
-          nextPages.push(u32(page, u16(page, h + 12 + 2 * c)))
-          nextCells.push(SUBTREE)
-          if (type === PAGE_INTERIOR_INDEX) {
-            nextPages.push(pgno)
-            nextCells.push(c)
-          }
-        }
-        nextPages.push(u32(page, h + 8))
-        nextCells.push(SUBTREE)
       }
       pages = nextPages
       cells = nextCells
-      // SQLite never builds b-trees deeper than 20 levels; deeper means a corrupt (cyclic) tree
-      if (++depth > 20) throw new Error(`b-tree at page ${root} is too deep; the database may be corrupt`)
     }
-    return { pages: Int32Array.from(pages), cells: Int32Array.from(cells), depth }
+    return { depth, pages, cells, subtrees: depth === 1 ? 0 : cells.filter(c => c === SUBTREE).length, fanout }
+  }
+
+  /** All leaf pages of a table b-tree, in order. */
+  private async listLeaves(root: number): Promise<number[]> {
+    const spine = await this.spine(root)
+    if (spine.depth === 1) return spine.pages
+    const read = await this.readPages(spine.pages)
+    const pages: number[] = []
+    spine.pages.forEach((pgno, i) => this.expandInterior(pgno, read[i], LEAF, pages, []))
+    return pages
+  }
+
+  /**
+   * Units of a b-tree in order, in batches that grow from a few pages (so that the first rows
+   * are counted quickly) to MAX_BATCH. The pages of the bottom interior level are read a few
+   * ahead of the batches.
+   */
+  private async *units(spine: Spine): AsyncGenerator<Units> {
+    if (spine.depth === 1) {
+      yield { pages: spine.pages, cells: spine.cells, progress: 1 }
+      return
+    }
+    const total = spine.pages.length
+    // about MAX_BATCH leaf pages per chunk of the bottom interior level
+    const perChunk = Math.max(1, Math.ceil(MAX_BATCH / spine.fanout))
+    const chunks: { from: number; to: number; units: Promise<{ pages: number[]; cells: number[] }> }[] = []
+    let next = 0
+    let size = 32
+    for (;;) {
+      while (chunks.length < 4 && next < total) {
+        const from = next
+        let subtrees = 0
+        // the first chunk is a single page, for the first rows
+        while (next < total && subtrees < (from ? perChunk : 1)) if (spine.cells[next++] === SUBTREE) subtrees++
+        const units = this.expandSpine(spine, from, next)
+        units.catch(() => {})
+        chunks.push({ from, to: next, units })
+      }
+      const chunk = chunks.shift()
+      if (!chunk) return
+      const { pages, cells } = await chunk.units
+      for (let i = 0; i < pages.length;) {
+        const end = Math.min(pages.length, i + size)
+        const progress = (chunk.from + (chunk.to - chunk.from) * end / pages.length) / total
+        yield { pages: pages.slice(i, end), cells: cells.slice(i, end), progress }
+        i = end
+        size = Math.min(size * 2, MAX_BATCH)
+      }
+    }
+  }
+
+  private async expandSpine(spine: Spine, from: number, to: number): Promise<{ pages: number[]; cells: number[] }> {
+    const subtrees: number[] = []
+    for (let i = from; i < to; i++) if (spine.cells[i] === SUBTREE) subtrees.push(spine.pages[i])
+    const read = await this.readPages(subtrees, true)
+    const pages: number[] = []
+    const cells: number[] = []
+    for (let i = from, k = 0; i < to; i++) {
+      if (spine.cells[i] === SUBTREE) {
+        this.expandInterior(spine.pages[i], read[k++], LEAF, pages, cells)
+      } else {
+        pages.push(spine.pages[i])
+        cells.push(spine.cells[i])
+      }
+    }
+    return { pages, cells }
+  }
+
+  private async countUnits(units: Units): Promise<CountedUnits> {
+    const counts = await this.leafCellCounts(units.pages.filter((_, i) => units.cells[i] === LEAF), true)
+    return { ...units, counts: units.pages.map((pgno, i) => units.cells[i] === LEAF ? counts.get(pgno)! : 1) }
+  }
+
+  /**
+   * Walk a b-tree in the background: list its units in order and count their rows, calling
+   * onBatch for consecutive batches until it returns false. The next batch is read while
+   * onBatch runs.
+   */
+  async walk(spine: Spine, onBatch: (batch: CountedUnits) => boolean | Promise<boolean>): Promise<void> {
+    const units = this.units(spine)
+    const count = (item: IteratorResult<Units>) => {
+      if (item.done) return undefined
+      const counted = this.countUnits(item.value)
+      counted.catch(() => {})
+      return counted
+    }
+    try {
+      let counting = count(await units.next())
+      while (counting) {
+        const next = count(await units.next())
+        if (!await onBatch(await counting)) return
+        counting = next
+      }
+    } finally {
+      await units.return(undefined)
+    }
+  }
+
+  /** The first or last rowid in a table b-tree, or undefined if the table is empty. */
+  async edgeRowid(root: number, last: boolean): Promise<number | bigint | undefined> {
+    for (let pgno = root, depth = 1; depth <= 20; depth++) {
+      const page = await this.readPage(pgno, true)
+      const h = headerOffset(pgno)
+      const n = u16(page, h + 3)
+      if (page[h] === PAGE_INTERIOR_TABLE) {
+        pgno = last || !n ? u32(page, h + 8) : u32(page, u16(page, h + 12))
+        continue
+      }
+      if (page[h] !== PAGE_LEAF_TABLE) throw new Error(`page ${pgno} should be a table b-tree page (type ${page[h]})`)
+      if (!n) return undefined
+      const pos = u16(page, h + 8 + 2 * (last ? n - 1 : 0))
+      return readSignedVarint(page, pos + readVarint(page, pos)[1])[0]
+    }
+    throw new Error(`b-tree at page ${root} is too deep; the database may be corrupt`)
+  }
+
+  private interior(pgno: number): Promise<Interior> {
+    return this.cached(`${this.prefix}i${pgno}`, async () => {
+      // cached parsed, not as a page
+      const page = await this.loadPage(pgno, false)
+      const h = headerOffset(pgno)
+      if (page[h] !== PAGE_INTERIOR_TABLE) throw new Error(`page ${pgno} should be an interior table b-tree page (type ${page[h]})`)
+      const n = u16(page, h + 3)
+      const children: number[] = []
+      const keys: number[] = []
+      for (let c = 0; c < n; c++) {
+        const at = u16(page, h + 12 + 2 * c)
+        children.push(u32(page, at))
+        keys.push(Number(readSignedVarint(page, at + 4)[0]))
+      }
+      children.push(u32(page, h + 8))
+      return { children, keys }
+    })
+  }
+
+  /** The leaf pages of a table b-tree of the given depth that can hold rowids in [lo, hi], in order. */
+  async rowidLeaves(root: number, depth: number, lo: number, hi: number): Promise<RowidLeaf[]> {
+    const visit = async (pgno: number, level: number, low: number, high: number): Promise<RowidLeaf[]> => {
+      if (level === depth) return [{ pgno, low, high }]
+      const { children, keys } = await this.interior(pgno)
+      const parts: Promise<RowidLeaf[]>[] = []
+      for (let i = 0; i < children.length; i++) {
+        // child i holds the rowids in (keys[i - 1], keys[i]]
+        const childLow = i ? keys[i - 1] : low
+        const childHigh = i < keys.length ? keys[i] : high
+        if (childLow >= hi) break
+        if (childHigh >= lo) parts.push(visit(children[i], level + 1, childLow, childHigh))
+      }
+      return (await Promise.all(parts)).flat()
+    }
+    return visit(root, 1, -Infinity, Infinity)
+  }
+
+  /**
+   * The index of a table with the fewest pages, if counting its entries is much faster than
+   * counting the table's rows. Partial indexes (CREATE INDEX ... WHERE) don't have an entry
+   * for every row.
+   */
+  async smallestIndex(table: string, tableSpine: Spine): Promise<{ name: string; spine: Spine } | undefined> {
+    const tableLeaves = estimatedLeaves(tableSpine)
+    if (tableLeaves < INDEX_MIN_LEAVES) return undefined
+    const indexes = this.schema.filter(r => r.type === 'index' && r.rootPage > 0 &&
+      r.tableName.toLowerCase() === table.toLowerCase() && !/\bwhere\b/i.test(r.sql))
+    const spines = await Promise.all(indexes.map(index => this.spine(index.rootPage, true).catch(() => undefined)))
+    let best: { name: string; spine: Spine } | undefined
+    spines.forEach((spine, i) => {
+      if (spine && (!best || estimatedLeaves(spine) < estimatedLeaves(best.spine))) best = { name: indexes[i].name, spine }
+    })
+    return best && estimatedLeaves(best.spine) <= tableLeaves * INDEX_MAX_RATIO ? best : undefined
   }
 
   // ---- cells and records ----
 
-  /** Rows of cells [from, to) of a leaf page (all cells by default). */
-  async decodeLeaf(pgno: number, layout: Layout, cap: number, from = 0, to = Infinity): Promise<unknown[][]> {
+  /** Rows of cells [from, to) of a leaf page (all cells by default); see decodeCell for full. */
+  async decodeLeaf(pgno: number, layout: Layout, full: boolean, from = 0, to = Infinity): Promise<unknown[][]> {
     const page = await this.readPage(pgno)
     const h = headerOffset(pgno)
     const type = page[h]
@@ -462,18 +732,22 @@ export class SqliteFile implements TableFile {
     const n = Math.min(u16(page, h + 3), to)
     // cells are decoded concurrently, so that the overflow chains of large rows are read in parallel
     const cells: Promise<unknown[]>[] = []
-    for (let c = from; c < n; c++) cells.push(this.decodeCell(page, u16(page, h + 8 + 2 * c), type, layout, cap))
+    for (let c = from; c < n; c++) cells.push(this.decodeCell(page, u16(page, h + 8 + 2 * c), type, layout, full))
     return Promise.all(cells)
   }
 
   /** The entry stored in cell c of an interior index page (WITHOUT ROWID tables). */
-  async decodeInteriorEntry(pgno: number, cell: number, layout: Layout, cap: number): Promise<unknown[]> {
+  async decodeInteriorEntry(pgno: number, cell: number, layout: Layout, full: boolean): Promise<unknown[]> {
     const page = await this.readPage(pgno)
     const h = headerOffset(pgno)
-    return this.decodeCell(page, u16(page, h + 12 + 2 * cell), page[h], layout, cap)
+    return this.decodeCell(page, u16(page, h + 12 + 2 * cell), page[h], layout, full)
   }
 
-  private async decodeCell(page: Uint8Array, pos: number, type: number, layout: Layout, cap: number): Promise<unknown[]> {
+  /**
+   * The values of a cell: in full (up to FULL_CAP bytes) for the detail panel and copying,
+   * otherwise only the first DISPLAY_PREFIX bytes of each value.
+   */
+  private async decodeCell(page: Uint8Array, pos: number, type: number, layout: Layout, full: boolean): Promise<unknown[]> {
     if (type === PAGE_INTERIOR_INDEX) pos += 4 // left child pointer
     const [payloadSize, n] = readVarint(page, pos)
     pos += n
@@ -484,9 +758,11 @@ export class SqliteFile implements TableFile {
       pos += m
     }
     const local = this.localPayload(payloadSize, type === PAGE_LEAF_TABLE)
-    const payload = local >= payloadSize
-      ? page.subarray(pos, pos + payloadSize)
-      : await this.readOverflow(page.subarray(pos, pos + local), u32(page, pos + local), payloadSize, cap)
+    let payload = page.subarray(pos, pos + local)
+    if (local < payloadSize) {
+      const want = full ? Math.min(payloadSize, FULL_CAP) : displayBytes(payload, payloadSize)
+      payload = await this.readOverflow(payload, u32(page, pos + local), want)
+    }
     return this.decodeRecord(payload, layout, rowid)
   }
 
@@ -500,12 +776,12 @@ export class SqliteFile implements TableFile {
     return k <= x ? k : m
   }
 
-  /** A payload continued in overflow pages, read up to cap bytes. */
-  private async readOverflow(local: Uint8Array, first: number, size: number, cap: number): Promise<Uint8Array> {
-    const want = Math.min(size, Math.max(cap, local.length))
+  /** The first `want` bytes of a payload continued in overflow pages. */
+  private async readOverflow(local: Uint8Array, first: number, want: number): Promise<Uint8Array> {
+    if (want <= local.length) return local.subarray(0, want)
     const out = new Uint8Array(want)
-    out.set(local.subarray(0, want))
-    let filled = Math.min(local.length, want)
+    out.set(local)
+    let filled = local.length
     let pgno = first
     let guard = 0
     while (filled < want && pgno) {
@@ -579,7 +855,9 @@ export class SqliteFile implements TableFile {
 
   private truncated(available: Uint8Array, type: number, size: number): unknown {
     if (type < 12) return null
-    const prefix = available.subarray(0, 4096)
+    let prefix = available.subarray(0, 4096)
+    // the cut may fall inside a character
+    if (type % 2 === 0 || this.encoding === 'utf-8') prefix = completeUtf8(prefix)
     return new TruncatedValue(type % 2 === 0 ? bytesToText(prefix, 2000) : this.textDecoder.decode(prefix), size)
   }
 
@@ -632,6 +910,10 @@ export class SqliteFile implements TableFile {
     ]
   }
 
+  stopCounting(): void {
+    for (const table of this.openTables.values()) table.then(t => t.stopCounting(), () => {})
+  }
+
   dispose(): void {
     for (const table of this.openTables.values()) table.then(t => t.dispose(), () => {})
     this.openTables.clear()
@@ -646,15 +928,23 @@ export class SqliteTable extends TableReader {
   columns: ReaderColumn[] = []
   numRows = 0
   private layout: Layout
-  private unitPages: Int32Array = new Int32Array(0)
-  private unitCells: Int32Array = new Int32Array(0)
-  /** prefix[u] = rows before unit u, known for u <= countedUnits. */
-  private prefix = new Float64Array(1)
-  private countedUnits = 0
-  private depth = 0
+  // the units (leaf pages, or entries of interior index pages) counted so far, in order
+  private unitPages = new Int32Array(256)
+  private unitCells = new Int32Array(256)
+  /** prefix[u] = rows before unit u, for u <= units. */
+  private prefix = new Float64Array(257)
+  private units = 0
   private leafPages = 0
-  private disposed = false
+  private depth = 0
+  private estimatedLeafPages = 0
+  /** Set when rows are found by rowid: the rowids run from min to max without gaps. */
+  private rowids?: { min: number; max: number; index: string }
+  /** The index whose entries are being counted. */
+  private countingWith?: string
+  /** Stop counting: the table is closed, or the database has changed. */
+  private stopped = false
   private countError?: string
+  private lastNotified = 0
   private waiters: { rows: number; resolve: () => void; reject: (error: Error) => void }[] = []
 
   constructor(
@@ -668,14 +958,17 @@ export class SqliteTable extends TableReader {
     this.layout = layoutFor(sqlTable)
   }
 
-  /** List the b-tree's pages and count the first rows; the rest are counted in the background. */
+  /** Count the first rows; the rest are counted in the background. */
   async start(): Promise<void> {
-    const units = await this.file.enumerate(this.root)
-    this.unitPages = units.pages
-    this.unitCells = units.cells
-    this.depth = units.depth
-    this.leafPages = units.cells.filter(c => c === -1).length
-    this.prefix = new Float64Array(units.pages.length + 1)
+    const spine = await this.file.spine(this.root)
+    this.depth = spine.depth
+    this.estimatedLeafPages = estimatedLeaves(spine)
+    this.counting = true
+    let unsubscribe = () => {}
+    const counted = this.count(spine)
+    // wait for the first batch, so the table opens with its first rows counted
+    await Promise.race([counted, new Promise<void>(resolve => (unsubscribe = this.onRowCount(resolve)))])
+    unsubscribe()
     if (!this.sqlTable.columns.length) await this.guessColumns()
     this.columns = this.layout.columns.map((c, i) => ({
       name: c.name,
@@ -686,16 +979,12 @@ export class SqliteTable extends TableReader {
       },
       format: { kind: 'generic' },
     }))
-    this.counting = true
-    const first = this.count()
-    // wait for the first batch, so the table opens with its first rows counted
-    await Promise.race([first, new Promise<void>(resolve => this.onRowCount(resolve))])
   }
 
   /** CREATE TABLE ... AS SELECT and unparseable schemas: name columns after the first row's values. */
   private async guessColumns(): Promise<void> {
-    const leaf = this.unitCells.indexOf(-1)
-    const rows = leaf >= 0 ? await this.file.decodeLeaf(this.unitPages[leaf], this.layout, DISPLAY_CAP, 0, 1) : []
+    const leaf = this.unitCells.subarray(0, this.units).indexOf(LEAF)
+    const rows = leaf >= 0 ? await this.file.decodeLeaf(this.unitPages[leaf], this.layout, false, 0, 1) : []
     const n = rows[0]?.length ?? 0
     this.sqlTable.columns = Array.from({ length: n }, (_, i) => ({ name: `column${i + 1}`, type: '', affinity: 'BLOB' as const, notNull: false, pkDesc: false }))
     this.layout = layoutFor(this.sqlTable)
@@ -706,37 +995,95 @@ export class SqliteTable extends TableReader {
     return this.sqlTable.primaryKey.some(k => k.toLowerCase() === name)
   }
 
-  private async count(): Promise<void> {
-    const n = this.unitPages.length
-    let batch = 32
-    let lastNotified = 0
+  private async count(spine: Spine): Promise<void> {
+    let first = true
     try {
-      while (this.countedUnits < n && !this.disposed) {
-        const leaves: number[] = []
-        let end = this.countedUnits
-        while (end < n && leaves.length < batch) {
-          if (this.unitCells[end] === -1) leaves.push(this.unitPages[end])
-          end++
-        }
-        const counts = await this.file.leafCellCounts(leaves)
-        for (let u = this.countedUnits; u < end; u++) {
-          this.prefix[u + 1] = this.prefix[u] + (this.unitCells[u] === -1 ? counts.get(this.unitPages[u])! : 1)
-        }
-        this.countedUnits = end
-        this.numRows = this.prefix[end]
+      await this.file.walk(spine, async batch => {
+        if (this.stopped) return false
+        this.append(batch)
+        this.progress = this.totalRows ? Math.min(1, this.numRows / this.totalRows) : batch.progress
         this.wake()
-        const now = Date.now()
-        if (now - lastNotified > 200 || end === n) {
-          lastNotified = now
-          if (end < n) this.rowCountChanged()
+        this.notify(first)
+        if (first) {
+          first = false
+          if (await this.countWithIndex(spine)) return false
         }
-        batch = Math.min(batch * 2, 4096)
-      }
+        return !this.stopped
+      })
     } catch (error) {
       this.countError = error instanceof Error ? error.message : String(error)
     }
     this.counting = false
     this.wake()
+    this.notify(true)
+  }
+
+  private append({ pages, cells, counts }: CountedUnits): void {
+    const n = this.units + pages.length
+    if (n > this.unitPages.length) {
+      const capacity = Math.max(n, this.unitPages.length * 2)
+      const unitPages = new Int32Array(capacity)
+      const unitCells = new Int32Array(capacity)
+      const prefix = new Float64Array(capacity + 1)
+      unitPages.set(this.unitPages)
+      unitCells.set(this.unitCells)
+      prefix.set(this.prefix)
+      this.unitPages = unitPages
+      this.unitCells = unitCells
+      this.prefix = prefix
+    }
+    for (let i = 0, u = this.units; i < pages.length; i++, u++) {
+      this.unitPages[u] = pages[i]
+      this.unitCells[u] = cells[i]
+      this.prefix[u + 1] = this.prefix[u] + counts[i]
+      if (cells[i] === LEAF) this.leafPages++
+    }
+    this.units = n
+    this.numRows = this.prefix[n]
+  }
+
+  /**
+   * Count the rows with the table's smallest index, if that is much faster than counting its
+   * leaf pages. If there are as many rows as the span of the rowids, the rowids have no gaps:
+   * row n is rowid min + n, and is found directly. Otherwise the table's rows are counted, and
+   * the index count is the total they are counted towards.
+   */
+  private async countWithIndex(spine: Spine): Promise<boolean> {
+    if (this.sqlTable.withoutRowid) return false
+    try {
+      const index = await this.file.smallestIndex(this.name, spine)
+      if (!index || this.stopped) return false
+      const [min, max] = await Promise.all([this.file.edgeRowid(this.root, false), this.file.edgeRowid(this.root, true)])
+      if (typeof min !== 'number' || typeof max !== 'number' || !Number.isSafeInteger(max - min + 1)) return false
+      this.countingWith = index.name
+      let total = 0
+      await this.file.walk(index.spine, batch => {
+        for (const count of batch.counts) total += count
+        this.progress = batch.progress
+        this.notify()
+        return !this.stopped
+      })
+      if (this.stopped) return false
+      if (total === max - min + 1) {
+        this.rowids = { min, max, index: index.name }
+        this.numRows = total
+        return true
+      }
+      this.totalRows = total
+      this.progress = Math.min(1, this.numRows / total)
+    } catch {
+      // count the table's rows instead
+    } finally {
+      this.countingWith = undefined
+    }
+    return false
+  }
+
+  /** Report a new row count or progress, at most every 200 ms unless forced. */
+  private notify(force = false): void {
+    const now = Date.now()
+    if (!force && now - this.lastNotified < 200) return
+    this.lastNotified = now
     this.rowCountChanged()
   }
 
@@ -758,7 +1105,7 @@ export class SqliteTable extends TableReader {
   /** Unit holding row (row < numRows). */
   private unitAt(row: number): number {
     let lo = 0
-    let hi = this.countedUnits - 1
+    let hi = this.units - 1
     while (lo < hi) {
       const mid = (lo + hi) >> 1
       if (this.prefix[mid + 1] > row) hi = mid
@@ -770,6 +1117,7 @@ export class SqliteTable extends TableReader {
   async readRows(start: number, end: number, full = false): Promise<unknown[][]> {
     if (end <= start) return []
     await this.waitForRows(end)
+    if (this.rowids) return this.rowsByRowid(start, end, full)
     // the units (leaf pages) holding the rows, read concurrently
     const parts: Promise<unknown[][]>[] = []
     let u = this.unitAt(start)
@@ -787,16 +1135,46 @@ export class SqliteTable extends TableReader {
   private async unitRows(u: number, from: number, to: number, full: boolean): Promise<unknown[][]> {
     const pgno = this.unitPages[u]
     const cell = this.unitCells[u]
-    const cap = full ? FULL_CAP : DISPLAY_CAP
-    if (cell >= 0) return [await this.file.decodeInteriorEntry(pgno, cell, this.layout, cap)]
-    if (full) return this.file.decodeLeaf(pgno, this.layout, cap, from, to)
-    const rows = await this.file.cached(`${this.file.prefix}${pgno}`, () => this.file.decodeLeaf(pgno, this.layout, cap))
-    return rows.slice(from, to)
+    if (cell >= 0) return [await this.file.decodeInteriorEntry(pgno, cell, this.layout, full)]
+    if (full) return this.file.decodeLeaf(pgno, this.layout, true, from, to)
+    return (await this.leafRows(pgno)).slice(from, to)
+  }
+
+  /** Rows [start, end) when the rowids have no gaps, found by rowid. */
+  private async rowsByRowid(start: number, end: number, full: boolean): Promise<unknown[][]> {
+    const { min, max } = this.rowids!
+    const lo = min + start
+    const hi = min + end - 1
+    const leaves = await this.file.rowidLeaves(this.root, this.depth, lo, hi)
+    const parts = leaves.map(async ({ pgno, low, high }) => {
+      // without gaps, a leaf page holds exactly the rowids within its bounds
+      const first = Math.max(low + 1, min)
+      const last = Math.min(high, max)
+      const from = Math.max(lo, first) - first
+      const to = Math.min(hi, last) - first + 1
+      if (full) return this.file.decodeLeaf(pgno, this.layout, true, from, to)
+      const rows = await this.leafRows(pgno)
+      if (rows.length !== last - first + 1) throw new Error(`page ${pgno} doesn't hold the rowids its parent page says; the database may be corrupt`)
+      return rows.slice(from, to)
+    })
+    const rows = (await Promise.all(parts)).flat()
+    if (rows.length !== end - start) throw new Error(`rows ${start} to ${end - 1} were not found by rowid; the database may be corrupt`)
+    return rows
+  }
+
+  /** All rows of a leaf page, as shown in the grid. */
+  private leafRows(pgno: number): Promise<unknown[][]> {
+    return this.file.cached(`${this.file.prefix}${pgno}`, () => this.file.decodeLeaf(pgno, this.layout, false))
   }
 
   async readColumn(col: number, start: number, end: number, full = false): Promise<unknown[]> {
     const rows = await this.readRows(start, Math.min(end, Math.max(this.numRows, start)), full)
     return rows.map(row => row[col])
+  }
+
+  /** How rows are found: 'rowid' when the rowids have no gaps, otherwise by 'position' in the b-tree. */
+  get lookup(): 'rowid' | 'position' {
+    return this.rowids ? 'rowid' : 'position'
   }
 
   columnInfo(col: number): KeyValue[] {
@@ -816,11 +1194,22 @@ export class SqliteTable extends TableReader {
     if (c.collate) items.push({ key: 'Collation', value: c.collate })
     if (c.generated) items.push({ key: 'Generated', value: c.generated === 'virtual' ? 'virtual (computed by SQLite, not stored in the file)' : 'stored' })
     const kind = [this.sqlTable.withoutRowid ? 'WITHOUT ROWID table' : 'table', this.sqlTable.strict ? 'STRICT' : ''].filter(Boolean).join(', ')
+    const fmt = (n: number) => n.toLocaleString('en-US')
+    let rows = fmt(this.numRows)
+    if (this.counting) {
+      rows += this.totalRows ? ` of ${fmt(this.totalRows)}` : '+'
+      rows += ` (counting${this.countingWith ? ` with index ${this.countingWith}` : ''}, ${Math.floor(this.progress * 100)}%)`
+    }
+    const leafPages = this.counting || this.rowids ? `about ${fmt(this.estimatedLeafPages)}` : fmt(this.leafPages)
     items.push(
       { key: 'Table', value: `${this.name} (${kind})` },
-      { key: 'Rows', value: `${this.numRows.toLocaleString('en-US')}${this.counting ? '+ (counting)' : ''}` },
-      { key: 'B-tree', value: `root page ${this.root}, depth ${this.depth}, ${this.leafPages.toLocaleString('en-US')} leaf pages` },
+      { key: 'Rows', value: rows },
+      { key: 'B-tree', value: `root page ${this.root}, depth ${this.depth}, ${leafPages} leaf pages` },
     )
+    if (this.rowids) {
+      const { min, max, index } = this.rowids
+      items.push({ key: 'Row lookup', value: `by rowid: the rowids run from ${fmt(min)} to ${fmt(max)} without gaps (rows counted with index ${index})` })
+    }
     if (this.countError) items.push({ key: 'Error', value: this.countError })
     return items
   }
@@ -829,8 +1218,12 @@ export class SqliteTable extends TableReader {
     return this.sql
   }
 
+  stopCounting(): void {
+    this.stopped = true
+  }
+
   override dispose(): void {
-    this.disposed = true
+    this.stopped = true
     super.dispose()
   }
 }

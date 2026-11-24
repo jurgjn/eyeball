@@ -34,7 +34,12 @@ const fileButton = el('button', 'toggle', 'File info')
 fileButton.title = 'File metadata and row groups'
 const detailButton = el('button', 'toggle', 'Cell value')
 detailButton.title = 'Show the full value of the selected cell (Enter)'
-toolbar.append(title, tableSelect, dims, spacer, gotoInput, columnsButton, fileButton, detailButton)
+// thin bar along the bottom of the toolbar: how far counting has got, or a sliding bar while reading
+const progress = el('div', 'progress')
+const progressBar = el('div', 'bar')
+progress.append(progressBar)
+progress.hidden = true
+toolbar.append(title, tableSelect, dims, spacer, gotoInput, columnsButton, fileButton, detailButton, progress)
 
 const main = el('div', 'main')
 const center = el('div', 'center')
@@ -44,6 +49,9 @@ const statusSelection = el('span', 'selsize')
 const statusMessage = el('span', 'message')
 statusBar.append(statusPosition, statusSelection, statusMessage)
 const overlay = el('div', 'overlay')
+const overlayText = el('div', 'text')
+const overlayDetail = el('div', 'detail')
+overlay.append(overlayText, overlayDetail)
 const menu = new ContextMenu()
 
 const store = new DataStore(post, () => grid.invalidate())
@@ -72,6 +80,7 @@ center.append(grid.el, detail.el)
 main.append(center, sidebar.el)
 app.append(toolbar, main, statusBar, overlay, menu.el)
 showOverlay('Loading…')
+updateProgress()
 
 // ---- toolbar ----
 
@@ -120,7 +129,15 @@ function showTables(init: TableInit): void {
 
 function showDims(): void {
   if (!table) return
-  const rows = table.counting ? `${fmt.format(table.numRows)}+ rows (counting)` : plural(table.numRows, 'row')
+  let rows = plural(table.numRows, 'row')
+  dims.title = ''
+  if (table.counting) {
+    const percent = table.progress ? `, ${Math.floor(table.progress * 100)}%` : ''
+    rows = table.totalRows
+      ? `${fmt.format(table.numRows)} of ${fmt.format(table.totalRows)} rows (counting${percent})`
+      : `${fmt.format(table.numRows)}+ rows (counting${percent})`
+    dims.title = 'Rows are counted in the background. The rows counted so far can be viewed already.'
+  }
   dims.textContent = `${rows} × ${plural(table.columns.length, 'column')} · ${formatBytes(table.fileSize)}`
 }
 
@@ -230,16 +247,39 @@ function setStatus(message: string, sticky = false): void {
 }
 
 // show "Loading…" while visible data is missing
+let loadingSince: number | undefined
 setInterval(() => {
   if (!statusTimer || statusMessage.textContent === '' || statusMessage.textContent === 'Loading…') {
     statusMessage.textContent = store.loading ? 'Loading…' : ''
   }
+  loadingSince = store.loading ? loadingSince ?? Date.now() : undefined
+  updateProgress()
 }, 250)
+
+/** The file or a table of it is being opened. */
+let opening: string | undefined
+
+/**
+ * The progress bar: a sliding bar while opening, or while the visible rows take longer than a
+ * moment to load; how far counting has got while the rows are counted.
+ */
+function updateProgress(): void {
+  let fraction: number | undefined
+  let visible = true
+  if (opening) fraction = undefined
+  else if (table?.counting) fraction = table.progress ?? 0
+  else if (loadingSince !== undefined && Date.now() - loadingSince > 300) fraction = undefined
+  else visible = false
+  progress.hidden = !visible
+  progress.classList.toggle('indeterminate', visible && fraction === undefined)
+  progressBar.style.width = fraction === undefined ? '' : `${Math.max(0.5, fraction * 100)}%`
+}
 
 function showOverlay(text: string, error = false): void {
   overlay.hidden = false
   overlay.className = error ? 'overlay error' : 'overlay'
-  overlay.textContent = text
+  overlayText.textContent = text
+  overlayDetail.textContent = ''
 }
 
 // ---- messages from the extension ----
@@ -249,9 +289,22 @@ window.addEventListener('message', (event: MessageEvent<HostMessage>) => {
   switch (msg.type) {
     case 'loading':
       title.textContent = msg.fileName
-      if (!table) showOverlay(`Reading ${msg.fileName}…`)
+      opening = table && msg.table ? `Opening table ${msg.table}…` : `Reading ${msg.fileName}…`
+      if (table) setStatus(opening, true)
+      else showOverlay(opening)
+      updateProgress()
+      break
+    case 'activity':
+      // the overlay, or the status bar when switching tables, says how much has been read
+      if (opening && msg.reads) {
+        const detail = `${formatBytes(msg.bytes)} read`
+        if (table) setStatus(`${opening} ${detail}`, true)
+        else overlayDetail.textContent = detail
+      }
       break
     case 'init': {
+      if (table && opening) setStatus('')
+      opening = undefined
       table = msg.table
       overlay.hidden = true
       title.textContent = table.fileName
@@ -269,16 +322,22 @@ window.addEventListener('message', (event: MessageEvent<HostMessage>) => {
       break
     }
     case 'fatal':
+      if (opening && table) setStatus('')
+      opening = undefined
       table = undefined
       showOverlay(`Could not open this file:\n${msg.message}`, true)
+      updateProgress()
       break
     case 'rowCount':
       if (!table) break
       table.numRows = msg.numRows
       table.counting = msg.counting
+      table.progress = msg.progress
+      table.totalRows = msg.totalRows
       store.dropPartial()
       grid.setRowCount(msg.numRows)
       showDims()
+      updateProgress()
       onActiveChanged()
       break
     case 'data':

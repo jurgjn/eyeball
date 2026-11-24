@@ -32,6 +32,10 @@ export interface TableInit {
   numRows: number
   /** numRows is a lower bound; rowCount messages follow while rows are being counted. */
   counting: boolean
+  /** While counting: the fraction of the work done. */
+  progress?: number
+  /** While counting: the total number of rows, if it is already known. */
+  totalRows?: number
   columns: ColumnMeta[]
 }
 
@@ -54,7 +58,10 @@ export interface KeyValue {
 // host -> webview
 
 export type HostMessage =
-  | { type: 'loading'; fileName: string }
+  /** Opening the file, or a table of it (table is set when switching tables). */
+  | { type: 'loading'; fileName: string; table?: string }
+  /** While opening: how much has been read so far. */
+  | { type: 'activity'; reads: number; bytes: number }
   | { type: 'init'; table: TableInit; reloaded: boolean }
   | { type: 'fatal'; message: string }
   | {
@@ -69,7 +76,7 @@ export type HostMessage =
   | { type: 'cell'; requestId: number; row: number; col: number; text: string; isNull: boolean }
   | { type: 'columnInfo'; col: number; items: KeyValue[] }
   | { type: 'fileInfo'; sections: InfoSection[] }
-  | { type: 'rowCount'; numRows: number; counting: boolean }
+  | { type: 'rowCount'; numRows: number; counting: boolean; progress?: number; totalRows?: number }
   | { type: 'status'; message: string }
 
 // webview -> host

@@ -5,7 +5,9 @@ files, with hundreds of millions of rows or tens of thousands of columns, and on
 parts of the file that are on screen. Opening a Parquet file reads just its footer, and
 scrolling to any row, even in the middle of a single huge row group, decodes only the pages
 that hold the visible rows. SQLite tables open immediately, and any row can be reached once
-it has been counted.
+it has been counted. Tables that have an index and whose rowids have no gaps (tables that rows
+were only added to) can be scrolled in full as soon as the index has been counted: seconds to
+minutes for a table of tens of millions of rows on a network file system.
 
 ![icon](media/icon.png)
 
@@ -37,6 +39,8 @@ Builds of every commit are available as artifacts of the [CI runs](https://githu
 - Cell detail panel with the full value; nested values are pretty-printed.
 - Copy a cell or range as tab-separated text (up to 2 million cells), with or without the header.
 - Reloads automatically when the file changes on disk.
+- Fast on network file systems (NFS, Lustre, GPFS): many reads are issued at once, and a
+  progress bar shows how far reading and counting rows has got.
 - Works over Remote SSH, WSL and in containers: the extension runs where the file is, and
   only the visible values are sent to the editor.
 
@@ -66,6 +70,9 @@ Settings:
 - `eyeball.cacheSizeMB` (default 512): memory for decoded pages, shared by all open files.
 - `eyeball.maxCellChars` (default 300): longer values are truncated in the grid, but shown in
   full in the cell detail panel and copied in full.
+- `eyeball.parallelReads` (default 64): reads issued at once. On network file systems each read
+  waits for the server, so more reads at once are faster. Above 4, files are read through a
+  helper process (Node reads files on 4 threads); 4 or less reads in the extension host only.
 
 If another extension also opens these files (Positron's Data Explorer, or another SQLite
 viewer), VS Code asks which one to use. To make Eyeball the default, add this to your settings:
@@ -92,8 +99,19 @@ also without native dependencies. A SQL engine can't jump to the n-th row of a t
 steps through all the rows before it), so Eyeball lists a table's leaf pages from its interior
 b-tree pages, counts the rows of each leaf in the background, and maps row positions to leaf
 pages. The first rows show immediately, and the row count grows while the rest are counted.
-Column names and types come from the `CREATE TABLE` statements. Committed pages in the
-write-ahead log take precedence over the database file, as in SQLite.
+A table whose rows are large (e.g. blobs) has about as many leaf pages as rows, so if one of
+its indexes is much smaller, Eyeball counts the index entries instead. If there are as many
+rows as the span of the rowids, the rowids have no gaps, so row n has rowid min + n and is
+found directly from the interior pages, without counting the table. Otherwise the table's rows
+are counted, towards the total from the index. Column names and types come from the `CREATE
+TABLE` statements. Committed pages in the write-ahead log take precedence over the database
+file, as in SQLite. The grid reads the first kilobyte of each value; the detail panel and
+copying read values in full.
+
+Counting runs in the background, and reads for the rows on screen go first. Node reads files on
+a pool of 4 threads, while network file systems take milliseconds per read and many reads at
+once are much faster, so Eyeball reads through a small helper process with a larger pool
+(`eyeball.parallelReads`). If the helper can't be started, files are read in the extension host.
 
 Requests that are superseded while scrolling are dropped, so fast scrolling through a large
 file stays responsive.
@@ -124,7 +142,8 @@ node test/check.mjs /tmp/eyeball-data [--perf]
 ```
 
 `--big` adds large files (30 million rows and 5000 columns of Parquet, 5 million rows of
-SQLite); `--perf` times random access on them.
+SQLite); `--perf` times random access on them. `--parallel=N` sets the reads at once, as
+`eyeball.parallelReads` does (4 or less reads without the helper process).
 
 `test/e2e.mjs` drives the packaged extension in [openvscode-server](https://github.com/gitpod-io/openvscode-server)
 with Playwright (`npm install playwright`): it opens the fixtures, scrolls, jumps, filters columns,

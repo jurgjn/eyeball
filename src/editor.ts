@@ -3,7 +3,7 @@ import * as vscode from 'vscode'
 import { BLOCK_ROWS, type BlockRequest, type CellText, type HostMessage, type WebviewMessage } from './protocol'
 import { LruCache } from './reader/lru'
 import { openTableFile } from './reader/open'
-import { memorySource, openFileSource, type ByteSource } from './reader/source'
+import { DEFAULT_PARALLEL_READS, memorySource, openFileSource, type ByteSource } from './reader/source'
 import type { TableFile, TableReader } from './reader/types'
 
 export const PARQUET_VIEW_TYPE = 'eyeball.parquet'
@@ -27,6 +27,8 @@ class DataDocument implements vscode.CustomDocument {
   private reloadTimer?: ReturnType<typeof setTimeout>
   private readonly reloadEmitter = new vscode.EventEmitter<void>()
   readonly onDidReload = this.reloadEmitter.event
+  /** Reads from the file (and its write-ahead log) so far, to show progress while opening. */
+  readonly readStats = { reads: 0, bytes: 0 }
 
   constructor(readonly uri: vscode.Uri, private readonly cache: LruCache<unknown>) {
     this.filePromise = this.open()
@@ -63,11 +65,25 @@ class DataDocument implements vscode.CustomDocument {
   }
 
   private async openSource(uri: vscode.Uri, optional = false): Promise<ByteSource | undefined> {
+    let source: ByteSource
     try {
-      return uri.scheme === 'file' ? await openFileSource(uri.fsPath) : memorySource(await vscode.workspace.fs.readFile(uri))
+      source = uri.scheme === 'file'
+        ? await openFileSource(uri.fsPath, { parallelReads: config('parallelReads', DEFAULT_PARALLEL_READS) })
+        : memorySource(await vscode.workspace.fs.readFile(uri))
     } catch (error) {
       if (optional) return undefined
       throw error
+    }
+    const stats = this.readStats
+    return {
+      size: source.size,
+      async read(start, end, background) {
+        const bytes = await source.read(start, end, background)
+        stats.reads++
+        stats.bytes += bytes.byteLength
+        return bytes
+      },
+      close: () => source.close(),
     }
   }
 
@@ -81,8 +97,11 @@ class DataDocument implements vscode.CustomDocument {
     const old = this.filePromise
     this.filePromise = this.open()
     this.filePromise.catch(() => {})
-    // let requests still running on the old file finish before closing it
-    old.then(file => setTimeout(() => file.dispose(), 30_000), () => {})
+    // let requests still running on the old file finish before closing it, but stop counting its rows
+    old.then(file => {
+      file.stopCounting?.()
+      setTimeout(() => file.dispose(), 30_000)
+    }, () => {})
     this.reloadEmitter.fire()
   }
 
@@ -162,7 +181,13 @@ class EditorSession {
     this.unsubscribe = undefined
     this.table = undefined
     const generation = this.generation
-    this.post({ type: 'loading', fileName: this.document.fileName })
+    this.post({ type: 'loading', fileName: this.document.fileName, table: this.tableName })
+    // show what has been read while opening: on network file systems, this can take a while
+    const { reads, bytes } = this.document.readStats
+    const activity = setInterval(() => {
+      const stats = this.document.readStats
+      if (generation === this.generation) this.post({ type: 'activity', reads: stats.reads - reads, bytes: stats.bytes - bytes })
+    }, 250)
     try {
       const file = await this.document.file
       if (generation !== this.generation) return
@@ -184,11 +209,15 @@ class EditorSession {
           table: name,
           numRows: table.numRows,
           counting: table.counting,
+          progress: table.progress,
+          totalRows: table.totalRows,
           columns: table.columns.map(c => c.meta),
         },
       })
     } catch (error) {
       if (generation === this.generation) this.post({ type: 'fatal', message: message(error) })
+    } finally {
+      clearInterval(activity)
     }
   }
 
@@ -198,7 +227,7 @@ class EditorSession {
     const lastBlock = Math.floor(this.lastRowCount / BLOCK_ROWS)
     for (const key of this.sent.keys()) if (key.startsWith(`${lastBlock}:`)) this.sent.delete(key)
     this.lastRowCount = table.numRows
-    this.post({ type: 'rowCount', numRows: table.numRows, counting: table.counting })
+    this.post({ type: 'rowCount', numRows: table.numRows, counting: table.counting, progress: table.progress, totalRows: table.totalRows })
   }
 
   private pump(): void {

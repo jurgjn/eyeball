@@ -125,6 +125,13 @@
           "minimum": 64,
           "description": "Memory budget in MB for decoded Parquet pages, shared by all open files."
         },
+        "eyeball.parallelReads": {
+          "type": "number",
+          "default": 64,
+          "minimum": 1,
+          "maximum": 1024,
+          "description": "Reads issued at once. On network file systems (NFS, Lustre, GPFS, SMB) each read waits for the server, so many reads at once make counting the rows of large SQLite databases and scrolling through them much faster. Above 4, files are read through a small helper process; set to 4 or less to read in the extension host only."
+        },
         "eyeball.maxCellChars": {
           "type": "number",
           "default": 300,

@@ -1,5 +1,6 @@
 import * as vscode from 'vscode'
 import { DataEditorProvider, PARQUET_VIEW_TYPE, SQLITE_VIEW_TYPE } from './editor'
+import { stopReadHelper } from './reader/source'
 
 const viewTypeFor = (uri: vscode.Uri) => /\.(parquet|parq|pq)$/i.test(uri.path) ? PARQUET_VIEW_TYPE : SQLITE_VIEW_TYPE
 
@@ -24,4 +25,6 @@ export function activate(context: vscode.ExtensionContext): void {
   )
 }
 
-export function deactivate(): void {}
+export function deactivate(): void {
+  stopReadHelper()
+}

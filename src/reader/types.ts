@@ -14,6 +14,10 @@ export abstract class TableReader {
   /** Rows known so far. Grows while `counting` is true. */
   abstract readonly numRows: number
   counting = false
+  /** While counting: the fraction of the work done. */
+  progress = 0
+  /** While counting: the total number of rows, if it is already known. */
+  totalRows?: number
   private readonly listeners = new Set<() => void>()
 
   /**
@@ -24,7 +28,7 @@ export abstract class TableReader {
 
   abstract columnInfo(col: number): KeyValue[]
 
-  /** Called whenever numRows or counting change. Returns a function that unsubscribes. */
+  /** Called whenever numRows, counting or progress change. Returns a function that unsubscribes. */
   onRowCount(listener: () => void): () => void {
     this.listeners.add(listener)
     return () => this.listeners.delete(listener)
@@ -72,5 +76,7 @@ export interface TableFile {
   readonly defaultTable: string
   openTable(name: string): Promise<TableReader>
   fileInfo(fileName: string): InfoSection[]
+  /** Stop work in the background, such as counting rows: the file has changed and is replaced. */
+  stopCounting?(): void
   dispose(): void
 }

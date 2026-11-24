@@ -112,6 +112,7 @@ input.invalid {
 /* ---- toolbar and status bar ---- */
 
 .toolbar {
+  position: relative;
   flex: none;
   display: flex;
   align-items: center;
@@ -119,6 +120,35 @@ input.invalid {
   padding: 4px 8px;
   border-bottom: 1px solid var(--vscode-panel-border, var(--grid-line-strong));
   min-height: 24px;
+}
+
+/* progress of counting rows, or a sliding bar while reading, over the toolbar's bottom border */
+.progress {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.progress .bar {
+  height: 100%;
+  background: var(--vscode-progressBar-background, #0e70c0);
+  transition: width 0.3s ease-out;
+}
+
+.progress.indeterminate .bar {
+  width: 30%;
+  transition: none;
+  animation: progress-slide 1.6s linear infinite;
+}
+
+@keyframes progress-slide {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(340%); }
 }
 
 .toolbar .title {
@@ -174,12 +204,20 @@ button.toggle.active {
 
 .overlay {
   position: fixed;
-  inset: 40px 0 auto 0;
+  /* below the toolbar and the grid's header */
+  inset: 80px 0 auto 0;
   text-align: center;
   padding: 24px;
   white-space: pre-wrap;
   color: var(--vscode-descriptionForeground);
   pointer-events: none;
+  z-index: 4;
+}
+
+.overlay .detail {
+  margin-top: 6px;
+  font-size: 0.9em;
+  opacity: 0.8;
 }
 
 .overlay.error {

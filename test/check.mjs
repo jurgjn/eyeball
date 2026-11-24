@@ -1,8 +1,10 @@
 // Checks the readers against values written by test/fixtures/make_fixtures.py and make_sqlite_fixtures.py.
 //
-// Usage: node test/check.mjs [DATA_DIR] [--perf]
+// Usage: node test/check.mjs [DATA_DIR] [--perf] [--parallel=N]
 //   DATA_DIR defaults to /tmp/eyeball-data. Every *.parquet, *.sqlite or *.db with a
 //   matching .expected.json is checked; --perf also times random access on large files.
+//   --parallel sets the reads run at once (as the eyeball.parallelReads setting); 4 or
+//   fewer read in this process, more through the helper process.
 import * as esbuild from 'esbuild'
 import { readdirSync, readFileSync, existsSync, mkdtempSync } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -12,6 +14,7 @@ import { join } from 'node:path'
 const args = process.argv.slice(2)
 const dataDir = args.find(a => !a.startsWith('--')) ?? '/tmp/eyeball-data'
 const perf = args.includes('--perf')
+const parallelReads = Number(args.find(a => a.startsWith('--parallel='))?.slice(11) ?? 64)
 
 const outDir = mkdtempSync(join(tmpdir(), 'eyeball-test-'))
 await esbuild.build({
@@ -26,8 +29,9 @@ const { openTableFile, openFileSource, LruCache } = createRequire(import.meta.ur
 
 /** Open a Parquet file or SQLite database (with its -wal file, if any). */
 async function openFile(path, cache) {
-  const sibling = async suffix => existsSync(path + suffix) ? openFileSource(path + suffix) : undefined
-  return openTableFile(await openFileSource(path), cache, sibling)
+  const open = p => openFileSource(p, { parallelReads })
+  const sibling = async suffix => existsSync(path + suffix) ? open(path + suffix) : undefined
+  return openTableFile(await open(path), cache, sibling)
 }
 
 /** Open a table and wait until its rows are counted. */
@@ -96,6 +100,7 @@ for (const fileName of files) {
     const label = expected.name ? `${expected.name}: ` : ''
     const names = table.columns.map(c => c.name)
     if (table.numRows !== expected.numRows) problems.push(`${label}numRows ${table.numRows} != ${expected.numRows}`)
+    if (expected.lookup && table.lookup !== expected.lookup) problems.push(`${label}rows found by ${table.lookup}, expected ${expected.lookup}`)
     // expected columns may omit some (e.g. random values), but must be in file order
     const present = names.filter(n => expected.columns.includes(n))
     if (present.join() !== expected.columns.join()) problems.push(`${label}columns ${names} do not contain ${expected.columns}`)

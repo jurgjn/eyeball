@@ -43,6 +43,8 @@ jobs:
           python test/fixtures/make_sqlite_fixtures.py "$RUNNER_TEMP/data"
       - name: Compare values with pyarrow and sqlite3
         run: node test/check.mjs "$RUNNER_TEMP/data"
+      - name: Compare values, reading without the helper process
+        run: node test/check.mjs "$RUNNER_TEMP/data" --parallel=4
 
   package:
     name: Package
