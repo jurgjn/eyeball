@@ -107,7 +107,7 @@ npm run package      # creates eyeball-<version>.vsix
 ```
 
 Install the package with **Extensions: Install from VSIX...**, or from the command line with
-`code --install-extension eyeball-0.1.0.vsix` (or `codium`/`positron`).
+`code --install-extension eyeball-<version>.vsix` (or `codium`/`positron`).
 
 Tests compare the values read by Eyeball with pyarrow and Python's sqlite3 for a set of
 generated files:
@@ -126,7 +126,7 @@ with Playwright (`npm install playwright`): it opens the fixtures, scrolls, jump
 copies and checks the results, and saves screenshots.
 
 ```sh
-openvscode-server --install-extension eyeball-0.1.0.vsix
+openvscode-server --install-extension eyeball-*.vsix
 openvscode-server --port 3123 --without-connection-token &
 node test/e2e.mjs http://127.0.0.1:3123 /tmp/eyeball-data /tmp/eyeball-shots
 ```
