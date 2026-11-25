@@ -96,3 +96,21 @@ export type WebviewMessage =
   | { type: 'columnInfo'; col: number }
   | { type: 'fileInfo' }
   | { type: 'selectTable'; name: string }
+
+// ---- the structure viewer (Mol*) ----
+
+/** A file for Mol* to read. */
+export interface StructureFile {
+  name: string
+  data: Uint8Array
+  /** For the files of a trajectory: which part it is, and its Mol* format. */
+  part?: 'model' | 'topology' | 'coordinates'
+  format?: string
+}
+
+export type StructureHostMessage =
+  /** Show these files; note explains what's missing, e.g. the topology of a trajectory. */
+  | { type: 'load'; files: StructureFile[]; note?: string; reloaded: boolean }
+  | { type: 'fatal'; message: string }
+
+export type StructureWebviewMessage = { type: 'ready' }

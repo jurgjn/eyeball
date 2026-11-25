@@ -1,4 +1,4 @@
-# Eyeball: Parquet and SQLite viewer for VS Code, VSCodium and Positron
+# Eyeball: Parquet, SQLite and molecular structure viewer for VS Code, VSCodium and Positron
 
 Eyeball opens Parquet files and SQLite databases in a scrollable grid. It is built for large
 files, with hundreds of millions of rows or tens of thousands of columns, and only reads the
@@ -8,6 +8,9 @@ that hold the visible rows. SQLite tables open immediately, and any row can be r
 it has been counted. Tables that have an index and whose rowids have no gaps (tables that rows
 were only added to) can be scrolled in full as soon as the index has been counted: seconds to
 minutes for a table of tens of millions of rows on a network file system.
+
+Molecular structures, density maps and trajectories open in [Mol*](https://molstar.org), in all
+the formats it reads.
 
 ![icon](media/icon.png)
 
@@ -43,6 +46,14 @@ Builds of every commit are available as artifacts of the [CI runs](https://githu
   progress bar shows how far reading and counting rows has got.
 - Works over Remote SSH, WSL and in containers: the extension runs where the file is, and
   only the visible values are sent to the viewer.
+- Molecular structures in [Mol*](https://molstar.org): PDB, PDBx/mmCIF and BinaryCIF, PDBQT, PQR,
+  GRO, XYZ, MOL, SDF, MOL2 and LAMMPS files, also gzipped (`.pdb.gz`, `.cif.gz`, ...); density
+  maps and other volumes (CCP4/MRC/MAP, DSN6/BRIX, Cube, DX, MTZ); trajectories (XTC, TRR, DCD,
+  NetCDF, LAMMPS) together with the topology or structure of the same name (`md.xtc` with
+  `md.gro`, `md.pdb`, `md.psf`, `md.prmtop`, ...); particles, meshes and MolViewSpec files.
+  Binary and gzipped files open in Mol* when double-clicked; text formats open in the text editor
+  by default, and in Mol* with **Open with Eyeball** or **Reopen Editor With...**. Mol* follows
+  the color theme, and the structure is reloaded when the file changes on disk.
 
 ## Usage
 
@@ -60,9 +71,13 @@ Builds of every commit are available as artifacts of the [CI runs](https://githu
 
 Row numbers start at 0, like in pandas and polars.
 
+Molecular structures are shown with Mol*'s viewer and its controls: drag to rotate, scroll to
+zoom, click to select, and use the panels for representations, colors, measurements and more
+(see [Mol*'s documentation](https://molstar.org/viewer-docs/)).
+
 Commands:
 
-- **Eyeball: Open Parquet File or SQLite Database...** opens files through a file dialog.
+- **Eyeball: Open Data File or Molecular Structure...** opens files through a file dialog.
 - **Open with Eyeball** in the explorer context menu, for when another viewer or editor is the default.
 
 Settings:
@@ -83,6 +98,13 @@ viewer), VS Code asks which one to use. To make Eyeball the default, add this to
 
 Eyeball also opens `.db` files by default. If yours aren't SQLite databases, associate `*.db`
 with another editor (`"*.db": "default"` for the text editor).
+
+To open text formats of molecular structures in Mol* by default, associate them with
+`eyeball.structure`:
+
+```json
+"workbench.editorAssociations": { "*.pdb": "eyeball.structure", "*.cif": "eyeball.structure" }
+```
 
 ## How it works
 
@@ -116,6 +138,13 @@ once are much faster, so Eyeball reads through a small helper process with a lar
 Requests that are superseded while scrolling are dropped, so fast scrolling through a large
 file stays responsive.
 
+Molecular structures are shown with the prebuilt viewer of [Mol*](https://molstar.org) (version
+5.13), which is included in the extension, so no internet connection is needed. The extension
+reads the file, and for a trajectory the topology or coordinates of the same name next to it,
+and sends it to the webview, where Mol* reads it in the format of its file extension. Unlike
+Parquet files and SQLite databases, the whole file is read, so very large trajectories may not
+fit into memory.
+
 Limitations: encrypted Parquet files and Parquet files whose column chunks live in other files
 are not supported. Because Eyeball has no SQL engine, SQLite views, virtual tables (e.g. FTS;
 their data is in the tables named after them) and the values of `VIRTUAL` generated columns
@@ -138,6 +167,7 @@ generated files:
 pip install -r test/requirements.txt
 python test/fixtures/make_fixtures.py /tmp/eyeball-data [--big]
 python test/fixtures/make_sqlite_fixtures.py /tmp/eyeball-data [--big]
+python test/fixtures/make_structure_fixtures.py /tmp/eyeball-data
 node test/check.mjs /tmp/eyeball-data [--perf]
 ```
 
@@ -146,8 +176,9 @@ SQLite); `--perf` times random access on them. `--parallel=N` sets the reads at 
 `eyeball.parallelReads` does (4 or less reads without the helper process).
 
 `test/e2e.mjs` drives the packaged extension in [openvscode-server](https://github.com/gitpod-io/openvscode-server)
-with Playwright (`npm install playwright`): it opens the fixtures, scrolls, jumps, filters columns,
-copies and checks the results, and saves screenshots.
+with Playwright (`npm install --no-save playwright`): it opens the fixtures, scrolls, jumps, filters
+columns, copies and checks the results, opens the molecular structures and checks what Mol* shows,
+and saves screenshots.
 
 ```sh
 openvscode-server --install-extension eyeball-*.vsix
@@ -183,3 +214,11 @@ also published there:
   token as `VSCE_PAT`.
 - Open VSX (VSCodium, Positron): sign in at https://open-vsx.org, create an access token, create the
   namespace with `npx ovsx create-namespace jurgjn -p <token>`, and add the token as `OVSX_PAT`.
+
+## Credits
+
+Molecular structures are shown with [Mol*](https://molstar.org) (MIT license; its license is
+included in the extension as `dist/molstar/LICENSE`). If you use it in published work, please
+cite: D. Sehnal, S. Bittrich, M. Deshpande et al. Mol* Viewer: modern web app for 3D visualization
+and analysis of large biomolecular structures. *Nucleic Acids Research* 49, W431–W437 (2021).
+https://doi.org/10.1093/nar/gkab314

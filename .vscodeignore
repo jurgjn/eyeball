@@ -2,6 +2,9 @@
 !dist/extension.js
 !dist/webview.js
 !dist/webview.css
+!dist/structure.js
+!dist/structure.css
+!dist/molstar/**
 !media/icon.png
 !package.json
 !README.md

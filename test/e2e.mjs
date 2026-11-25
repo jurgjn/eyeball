@@ -2,11 +2,12 @@
 //
 // Usage: node test/e2e.mjs URL FOLDER OUTDIR [SECTIONS]
 //   URL     openvscode-server with the extension installed, e.g. http://127.0.0.1:3123
-//   FOLDER  folder containing the fixtures (test/fixtures/make_fixtures.py --big)
+//   FOLDER  folder containing the fixtures (test/fixtures/make_fixtures.py --big, and
+//           make_sqlite_fixtures.py and make_structure_fixtures.py for those sections)
 //   OUTDIR  where screenshots are written
-//   SECTIONS  optional regex selecting sections (types, tall, wide, wide100k, nested, sqlite, edge, dark)
+//   SECTIONS  optional regex selecting sections (types, tall, wide, wide100k, nested, sqlite, structure, edge, dark)
 import { chromium } from 'playwright'
-import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const [url = 'http://127.0.0.1:3123', folder = '/tmp/eyeball-data', outDir = '/tmp/eyeball-shots', sections] = process.argv.slice(2)
@@ -44,8 +45,8 @@ const closeAux = page.locator('.part.auxiliarybar .action-label.codicon-close, a
 if (await closeAux.isVisible().catch(() => false)) await closeAux.click()
 await page.waitForTimeout(500)
 
-/** Open a file with quick open and return the frame of its (new) webview. */
-async function open(file) {
+/** Open a file with quick open and return the frame of its (new) webview, once ready is shown. */
+async function open(file, ready = '.grid') {
   const before = await page.locator('iframe.webview.ready').count()
   await page.keyboard.press('Control+P')
   await page.waitForSelector('.quick-input-widget input', { state: 'visible' })
@@ -55,7 +56,7 @@ async function open(file) {
   await page.waitForFunction(n => document.querySelectorAll('iframe.webview.ready').length > n, before, { timeout: 30000 })
   // the custom editor's content is in an iframe inside the webview iframe; other editors' webviews are hidden
   const frame = page.frameLocator('iframe.webview.ready:visible').frameLocator('#active-frame')
-  await frame.locator('.grid').waitFor({ timeout: 30000 })
+  await frame.locator(ready).waitFor({ timeout: 30000 })
   return frame
 }
 
@@ -283,6 +284,47 @@ if (run('sqlite') && existsSync(join(folder, 'types.sqlite'))) {
   check(await settle(frame), 'sqlite wal: opens')
   const walTables = await frame.locator('select.tables option').allTextContents()
   check(walTables.includes('only_in_wal'), `sqlite wal: tables ${walTables.join(', ')}`)
+}
+
+// ---- molecular structures, with Mol* ----
+if (run('structure') && existsSync(join(folder, 'structures.expected.json'))) {
+  const expected = JSON.parse(readFileSync(join(folder, 'structures.expected.json'), 'utf8'))
+  // text formats open as text by default: make the structure viewer their editor in this folder
+  const settings = join(folder, '.vscode', 'settings.json')
+  const wroteSettings = !existsSync(settings)
+  if (wroteSettings) {
+    const associations = Object.fromEntries(['pdb', 'cif', 'gro', 'xyz', 'sdf', 'mol2'].map(ext => [`*.${ext}`, 'eyeball.structure']))
+    mkdirSync(join(folder, '.vscode'), { recursive: true })
+    writeFileSync(settings, JSON.stringify({ 'workbench.editorAssociations': associations }, null, 2))
+    await page.waitForTimeout(1500)
+  }
+  for (const [file, want] of Object.entries(expected)) {
+    const frame = await open(file, '#app')
+    const loaded = await frame.locator('body[data-atoms]').waitFor({ timeout: 30000 }).then(() => true, () => false)
+    check(loaded, `structure ${file}: loads`)
+    if (!loaded) continue
+    const data = await frame.locator('body').evaluate(body => ({ ...body.dataset }))
+    const message = await frame.locator('#message:not([hidden])').textContent({ timeout: 500 }).catch(() => '')
+    if (want.atoms) check(Number(data.atoms) === want.atoms, `structure ${file}: ${data.atoms} atoms, expected ${want.atoms}`)
+    if (want.frames) check(Number(data.frames) === want.frames, `structure ${file}: ${data.frames} frames, expected ${want.frames}`)
+    if (want.volume) check(Number(data.volumes) > 0, `structure ${file}: ${data.volumes} volumes`)
+    if (want.note) check(/topology/.test(message ?? ''), `structure ${file}: note ${JSON.stringify(message)}`)
+    else check(!message, `structure ${file}: no message (${JSON.stringify(message)})`)
+    await page.waitForTimeout(1000)
+    await shot(`structure-${file}`)
+  }
+  // a structure that changes on disk is reloaded
+  const helix = readFileSync(join(folder, 'helix.pdb'), 'utf8').split('\n')
+  const reloadFile = join(folder, 'e2e_reload.pdb')
+  writeFileSync(reloadFile, helix.join('\n'))
+  const frame = await open('e2e_reload.pdb', '#app')
+  await frame.locator('body[data-atoms]').waitFor({ timeout: 30000 })
+  const atoms = Number(await frame.locator('body').getAttribute('data-atoms'))
+  writeFileSync(reloadFile, [...helix.filter(l => l.startsWith('ATOM')).slice(0, 50), 'END', ''].join('\n'))
+  const reloaded = await frame.locator('body[data-atoms="50"]').waitFor({ timeout: 15000 }).then(() => true, () => false)
+  check(atoms === 120 && reloaded, `structure: reloaded after a change on disk (${atoms} atoms, then ${await frame.locator('body').getAttribute('data-atoms')})`)
+  rmSync(reloadFile)
+  if (wroteSettings) rmSync(settings)
 }
 
 // ---- edge cases: empty file, not a Parquet file, file changing on disk ----

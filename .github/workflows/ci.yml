@@ -15,6 +15,10 @@ on:
 permissions:
   contents: read
 
+env:
+  # a dependency of molstar's dependencies reports installs unless told not to
+  SCARF_ANALYTICS: 'false'
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name != 'release' }}

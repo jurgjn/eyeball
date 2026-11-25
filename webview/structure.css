@@ -1,0 +1,50 @@
+/* The structure viewer: Mol* fills the editor; messages float above it. */
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+#app {
+  position: absolute;
+  inset: 0;
+}
+
+#message {
+  position: absolute;
+  top: 48px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(640px, 90%);
+  z-index: 1000;
+  padding: 8px 12px;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  color: var(--vscode-notifications-foreground);
+  background: var(--vscode-notifications-background);
+  border: 1px solid var(--vscode-notifications-border, var(--vscode-widget-border, transparent));
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, rgba(0, 0, 0, 0.3));
+  cursor: pointer;
+}
+
+#message[hidden] {
+  display: none;
+}
+
+#message.loading {
+  cursor: default;
+}
+
+#message.info {
+  border-left: 3px solid var(--vscode-notificationsInfoIcon-foreground, #3794ff);
+}
+
+#message.error {
+  border-left: 3px solid var(--vscode-notificationsErrorIcon-foreground, var(--vscode-errorForeground, #f14c4c));
+  user-select: text;
+}

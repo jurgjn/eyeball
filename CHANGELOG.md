@@ -7,6 +7,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Viewer for molecular structures, volumes and trajectories, with [Mol*](https://molstar.org) 5.13:
+  all the formats Mol* reads (PDB, PDBx/mmCIF, BinaryCIF, SDF, MOL2, GRO, XYZ, CCP4/MRC, DCD,
+  XTC, ...), also gzipped. Binary and gzipped files open in it by default, text formats with
+  **Open with Eyeball** or **Reopen Editor With...**. A trajectory opens with the topology or
+  structure of the same name next to it. Follows the color theme, and reloads when the file
+  changes on disk.
+
 ## [0.1.0] - 2026-11-24
 
 ### Added

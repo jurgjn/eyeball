@@ -1,7 +1,7 @@
 {
   "name": "eyeball",
-  "displayName": "Eyeball: Parquet and SQLite Viewer",
-  "description": "Fast viewer for large Parquet files and SQLite databases. Scroll through millions of rows and thousands of columns; only what is on screen is read.",
+  "displayName": "Eyeball: Parquet, SQLite and Molecular Structure Viewer",
+  "description": "Fast viewer for large Parquet files and SQLite databases, and molecular structures with Mol*. Scroll through millions of rows and thousands of columns; only what is on screen is read.",
   "version": "0.2.0-dev",
   "publisher": "jurgjn",
   "license": "MIT",
@@ -24,7 +24,12 @@
     "data viewer",
     "table",
     "dataframe",
-    "database"
+    "database",
+    "pdb",
+    "mmcif",
+    "protein",
+    "molecular structure",
+    "molstar"
   ],
   "main": "./dist/extension.js",
   "extensionKind": [
@@ -42,6 +47,8 @@
   "activationEvents": [
     "onCustomEditor:eyeball.parquet",
     "onCustomEditor:eyeball.sqlite",
+    "onCustomEditor:eyeball.structure",
+    "onCustomEditor:eyeball.structure.binary",
     "onCommand:eyeball.openFile",
     "onCommand:eyeball.openWith"
   ],
@@ -87,12 +94,203 @@
           }
         ],
         "priority": "default"
+      },
+      {
+        "viewType": "eyeball.structure",
+        "displayName": "Eyeball Structure Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*.pdb"
+          },
+          {
+            "filenamePattern": "*.ent"
+          },
+          {
+            "filenamePattern": "*.pdbqt"
+          },
+          {
+            "filenamePattern": "*.pqr"
+          },
+          {
+            "filenamePattern": "*.cif"
+          },
+          {
+            "filenamePattern": "*.mmcif"
+          },
+          {
+            "filenamePattern": "*.mcif"
+          },
+          {
+            "filenamePattern": "*.gro"
+          },
+          {
+            "filenamePattern": "*.xyz"
+          },
+          {
+            "filenamePattern": "*.mol"
+          },
+          {
+            "filenamePattern": "*.sdf"
+          },
+          {
+            "filenamePattern": "*.sd"
+          },
+          {
+            "filenamePattern": "*.mol2"
+          },
+          {
+            "filenamePattern": "*.lammpstrj"
+          },
+          {
+            "filenamePattern": "*.psf"
+          },
+          {
+            "filenamePattern": "*.prmtop"
+          },
+          {
+            "filenamePattern": "*.parm7"
+          },
+          {
+            "filenamePattern": "*.top"
+          },
+          {
+            "filenamePattern": "*.cub"
+          },
+          {
+            "filenamePattern": "*.cube"
+          },
+          {
+            "filenamePattern": "*.mvsj"
+          },
+          {
+            "filenamePattern": "*.kin"
+          }
+        ],
+        "priority": "option"
+      },
+      {
+        "viewType": "eyeball.structure.binary",
+        "displayName": "Eyeball Structure Viewer",
+        "selector": [
+          {
+            "filenamePattern": "*.bcif"
+          },
+          {
+            "filenamePattern": "*.ccp4"
+          },
+          {
+            "filenamePattern": "*.mrc"
+          },
+          {
+            "filenamePattern": "*.dsn6"
+          },
+          {
+            "filenamePattern": "*.brix"
+          },
+          {
+            "filenamePattern": "*.dxbin"
+          },
+          {
+            "filenamePattern": "*.mtz"
+          },
+          {
+            "filenamePattern": "*.xtc"
+          },
+          {
+            "filenamePattern": "*.trr"
+          },
+          {
+            "filenamePattern": "*.dcd"
+          },
+          {
+            "filenamePattern": "*.nctraj"
+          },
+          {
+            "filenamePattern": "*.g3d"
+          },
+          {
+            "filenamePattern": "*.simularium"
+          },
+          {
+            "filenamePattern": "*.mvsx"
+          },
+          {
+            "filenamePattern": "*.pdb.gz"
+          },
+          {
+            "filenamePattern": "*.ent.gz"
+          },
+          {
+            "filenamePattern": "*.pdbqt.gz"
+          },
+          {
+            "filenamePattern": "*.pqr.gz"
+          },
+          {
+            "filenamePattern": "*.cif.gz"
+          },
+          {
+            "filenamePattern": "*.mmcif.gz"
+          },
+          {
+            "filenamePattern": "*.mcif.gz"
+          },
+          {
+            "filenamePattern": "*.bcif.gz"
+          },
+          {
+            "filenamePattern": "*.gro.gz"
+          },
+          {
+            "filenamePattern": "*.xyz.gz"
+          },
+          {
+            "filenamePattern": "*.mol.gz"
+          },
+          {
+            "filenamePattern": "*.sdf.gz"
+          },
+          {
+            "filenamePattern": "*.sd.gz"
+          },
+          {
+            "filenamePattern": "*.mol2.gz"
+          },
+          {
+            "filenamePattern": "*.psf.gz"
+          },
+          {
+            "filenamePattern": "*.prmtop.gz"
+          },
+          {
+            "filenamePattern": "*.parm7.gz"
+          },
+          {
+            "filenamePattern": "*.top.gz"
+          },
+          {
+            "filenamePattern": "*.cub.gz"
+          },
+          {
+            "filenamePattern": "*.cube.gz"
+          },
+          {
+            "filenamePattern": "*.ccp4.gz"
+          },
+          {
+            "filenamePattern": "*.mrc.gz"
+          },
+          {
+            "filenamePattern": "*.map.gz"
+          }
+        ],
+        "priority": "default"
       }
     ],
     "commands": [
       {
         "command": "eyeball.openFile",
-        "title": "Open Parquet File or SQLite Database...",
+        "title": "Open Data File or Molecular Structure...",
         "category": "Eyeball"
       },
       {
@@ -105,7 +303,7 @@
       "explorer/context": [
         {
           "command": "eyeball.openWith",
-          "when": "resourceExtname =~ /^\\.(parquet|parq|pq|sqlite|sqlite3|db|db3|s3db|sl3)$/i",
+          "when": "resourceExtname =~ /^\\.(parquet|parq|pq|sqlite|sqlite3|db|db3|s3db|sl3)$/i || resourceFilename =~ /\\.(bcif|brix|ccp4|cif|cub|cube|data|dcd|dsn6|dx|dxbin|em|ent|g3d|gro|kin|lammpstrj|map|mcif|mmcif|mol|mol2|mrc|mtz|mvsj|mvsx|nc|nctraj|ndjson|obj|parm7|pdb|pdbqt|ply|pqr|prmtop|psf|sd|sdf|simularium|star|tbl|top|trr|vtp|xtc|xyz)(\\.gz)?$/i",
           "group": "navigation@99"
         }
       ],
@@ -156,6 +354,7 @@
     "esbuild": "^0.28.2",
     "hyparquet": "1.33.1",
     "hyparquet-compressors": "1.1.3",
+    "molstar": "5.13.1",
     "typescript": "^7.0.2"
   }
 }
