@@ -21,6 +21,12 @@ and install it with **Extensions: Install from VSIX...** in VS Code, VSCodium or
 the command line with `code --install-extension eyeball-<version>.vsix` (or `codium`/`positron`).
 Builds of every commit are available as artifacts of the [CI runs](https://github.com/jurgjn/eyeball/actions).
 
+To install the latest build of `main`, run `./install_latest.sh` in a clone of this repository. It
+downloads the VSIX of the most recent successful CI run with the [GitHub CLI](https://cli.github.com)
+(`gh`, logged in: GitHub serves CI artifacts to logged-in users only) and installs it with `codium`,
+or with the command given as its argument (`./install_latest.sh code`, `./install_latest.sh positron`).
+Over Remote SSH, run it in the editor's integrated terminal, so that it installs on the remote host.
+
 ## Features
 
 - Opens `.parquet`, `.parq` and `.pq` files, and SQLite databases (`.sqlite`, `.sqlite3`, `.db`,
