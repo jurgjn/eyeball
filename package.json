@@ -1,7 +1,7 @@
 {
   "name": "eyeball",
   "displayName": "Eyeball: Parquet, SQLite and Molecular Structure Viewer",
-  "description": "Fast viewer for large Parquet files and SQLite databases, and molecular structures with Mol*. Scroll through millions of rows and thousands of columns; only what is on screen is read.",
+  "description": "Fast viewer for large Parquet files and SQLite databases, molecular structures with Mol*, and the files in SquashFS and Apptainer images. Scroll through millions of rows and thousands of columns; only what is on screen is read.",
   "version": "0.3.0-dev",
   "publisher": "jurgjn",
   "license": "MIT",
@@ -29,7 +29,10 @@
     "mmcif",
     "protein",
     "molecular structure",
-    "molstar"
+    "molstar",
+    "squashfs",
+    "apptainer",
+    "singularity"
   ],
   "main": "./dist/extension.js",
   "extensionKind": [
@@ -50,7 +53,10 @@
     "onCustomEditor:eyeball.structure",
     "onCustomEditor:eyeball.structure.binary",
     "onCommand:eyeball.openFile",
-    "onCommand:eyeball.openWith"
+    "onCommand:eyeball.openWith",
+    "onFileSystem:squashfs",
+    "onCustomEditor:eyeball.squashfs",
+    "onCommand:eyeball.openSquashfs"
   ],
   "contributes": {
     "customEditors": [
@@ -285,6 +291,28 @@
           }
         ],
         "priority": "default"
+      },
+      {
+        "viewType": "eyeball.squashfs",
+        "displayName": "Eyeball SquashFS Image",
+        "selector": [
+          {
+            "filenamePattern": "*.sqfs"
+          },
+          {
+            "filenamePattern": "*.squashfs"
+          },
+          {
+            "filenamePattern": "*.sqsh"
+          },
+          {
+            "filenamePattern": "*.squash"
+          },
+          {
+            "filenamePattern": "*.sif"
+          }
+        ],
+        "priority": "default"
       }
     ],
     "commands": [
@@ -297,6 +325,11 @@
         "command": "eyeball.openWith",
         "title": "Open with Eyeball",
         "category": "Eyeball"
+      },
+      {
+        "command": "eyeball.openSquashfs",
+        "title": "Open SquashFS Image as Folder...",
+        "category": "Eyeball"
       }
     ],
     "menus": {
@@ -305,6 +338,11 @@
           "command": "eyeball.openWith",
           "when": "resourceExtname =~ /^\\.(parquet|parq|pq|sqlite|sqlite3|db|db3|s3db|sl3)$/i || resourceFilename =~ /\\.(bcif|brix|ccp4|cif|cub|cube|data|dcd|dsn6|dx|dxbin|em|ent|g3d|gro|kin|lammpstrj|map|mcif|mmcif|mol|mol2|mrc|mtz|mvsj|mvsx|nc|nctraj|ndjson|obj|parm7|pdb|pdbqt|ply|pqr|prmtop|psf|sd|sdf|simularium|star|tbl|top|trr|vtp|xtc|xyz)(\\.gz)?$/i",
           "group": "navigation@99"
+        },
+        {
+          "command": "eyeball.openSquashfs",
+          "when": "resourceScheme == file && resourceExtname =~ /^\\.(sqfs|squashfs|sqsh|squash|sif)$/i",
+          "group": "navigation@98"
         }
       ],
       "commandPalette": [

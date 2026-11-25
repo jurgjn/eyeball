@@ -1,11 +1,13 @@
-// Checks the readers against values written by test/fixtures/make_fixtures.py and make_sqlite_fixtures.py.
+// Checks the readers against values written by test/fixtures/make_fixtures.py and make_sqlite_fixtures.py,
+// and SquashFS images against listings written by make_squashfs_fixtures.py.
 //
 // Usage: node test/check.mjs [DATA_DIR] [--perf] [--parallel=N]
-//   DATA_DIR defaults to /tmp/eyeball-data. Every *.parquet, *.sqlite or *.db with a
-//   matching .expected.json is checked; --perf also times random access on large files.
+//   DATA_DIR defaults to /tmp/eyeball-data. Every *.parquet, *.sqlite, *.db, *.sqfs or *.sif with
+//   a matching .expected.json is checked; --perf also times random access on large files.
 //   --parallel sets the reads run at once (as the eyeball.parallelReads setting); 4 or
 //   fewer read in this process, more through the helper process.
 import * as esbuild from 'esbuild'
+import { createHash } from 'node:crypto'
 import { readdirSync, readFileSync, existsSync, mkdtempSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
@@ -25,7 +27,8 @@ await esbuild.build({
   outfile: join(outDir, 'reader.cjs'),
   logLevel: 'warning',
 })
-const { openTableFile, openFileSource, LruCache } = createRequire(import.meta.url)(join(outDir, 'reader.cjs'))
+const { openTableFile, openFileSource, LruCache, SquashfsImage, squashfsFileSource, squashfsOffset } =
+  createRequire(import.meta.url)(join(outDir, 'reader.cjs'))
 
 /** Open a Parquet file or SQLite database (with its -wal file, if any). */
 async function openFile(path, cache) {
@@ -151,6 +154,87 @@ for (const fileName of files) {
   for (const p of problems) console.log('     ' + p)
   if (bad || problems.length) failures++
   file.dispose()
+}
+
+// ---- SquashFS images: listings, contents, symbolic links, and the readers on files inside ----
+const sha256 = bytes => createHash('sha256').update(bytes).digest('hex')
+const images = readdirSync(dataDir).filter(f => /\.(sqfs|sif)$/.test(f) && existsSync(join(dataDir, f + '.expected.json'))).sort()
+for (const fileName of images) {
+  const { files: expected, unsupported } = JSON.parse(readFileSync(join(dataDir, fileName + '.expected.json'), 'utf8'))
+  const t0 = performance.now()
+  const problems = []
+  const source = await openFileSource(join(dataDir, fileName), { parallelReads })
+  if (unsupported) {
+    // images in other compressions can't be opened, with a message that says why
+    const error = await SquashfsImage.open(source, await squashfsOffset(source)).then(() => undefined, e => e.message)
+    console.log(`${error?.includes(unsupported) ? 'ok  ' : 'FAIL'} ${fileName}: ${error ?? 'opened'}`)
+    if (!error?.includes(unsupported)) failures++
+    await source.close()
+    continue
+  }
+  const image = await SquashfsImage.open(source, await squashfsOffset(source))
+  const found = {}
+  const walk = async (dir, path) => {
+    for (const [name, entry] of await image.entries(dir)) {
+      const inode = await image.inode(entry.ref)
+      found[`${path}/${name}`] = inode
+      if (entry.kind !== inode.kind) problems.push(`${path}/${name}: entry is a ${entry.kind}, inode a ${inode.kind}`)
+      if (inode.kind === 'directory') await walk(inode, `${path}/${name}`)
+    }
+  }
+  await walk(await image.lookup('/'), '')
+  const missing = Object.keys(expected).filter(p => !found[p])
+  const extra = Object.keys(found).filter(p => !expected[p])
+  if (missing.length || extra.length) problems.push(`missing ${missing.slice(0, 5)}, extra ${extra.slice(0, 5)}`)
+  let ok = 0
+  for (const [path, want] of Object.entries(expected)) {
+    const inode = found[path]
+    if (!inode) continue
+    const bad = message => problems.length < 12 && problems.push(`${path}: ${message}`)
+    if (inode.kind !== want.kind) bad(`${inode.kind}, expected ${want.kind}`)
+    else if (want.kind === 'symlink' && inode.target !== want.target) bad(`target ${inode.target}, expected ${want.target}`)
+    else if (want.kind === 'file' && inode.size !== want.size) bad(`size ${inode.size}, expected ${want.size}`)
+    else if (want.kind === 'file' && sha256(await image.read(inode, 0, inode.size)) !== want.sha256) bad('contents differ')
+    else ok++
+  }
+  {
+    // ranges agree with the whole file
+    for (const path of ['/random.bin', '/text.txt', '/sparse.bin']) {
+      const inode = found[path]
+      const whole = await image.read(inode, 0, inode.size)
+      for (let k = 0; k < 20; k++) {
+        const a = Math.floor(Math.random() * inode.size)
+        const b = Math.min(inode.size, a + Math.floor(Math.random() * 300000))
+        if (sha256(await image.read(inode, a, b)) !== sha256(whole.subarray(a, b))) problems.push(`${path}: range [${a}, ${b}) differs`)
+      }
+    }
+    // symbolic links, in the middle and at the end of paths
+    const deep = expected['/dir/nested/deep/file.txt'].sha256
+    const contents = async path => sha256(await image.read(await image.lookup(path), 0, Infinity))
+    if (await contents('/link-to-dir/deep/file.txt') !== deep) problems.push('/link-to-dir/deep/file.txt: wrong file')
+    if (await contents('/abs-link') !== deep) problems.push('/abs-link: wrong file')
+    if ((await image.lookup('/link-to-hello', false)).kind !== 'symlink') problems.push('/link-to-hello: not a link without following')
+    for (const [path, code] of [['/dangling', 'ENOENT'], ['/loop1', 'ELOOP'], ['/hello.txt/x', 'ENOTDIR'], ['/no/such/file', 'ENOENT']]) {
+      const error = await image.lookup(path).then(() => undefined, e => e.code)
+      if (error !== code) problems.push(`${path}: ${error ?? 'found'}, expected ${code}`)
+    }
+    // the readers, on files in the image
+    const inImage = async path => squashfsFileSource(image, await image.lookup(path))
+    const parquet = await openTableFile(await inImage('/data/table.parquet'), cache, async () => undefined)
+    const sqlite = await openTableFile(await inImage('/data/db.sqlite'), cache, async () => undefined)
+    for (const [file, name, rows, check] of [[parquet, undefined, 5000, [4321, 1, 'row 4321']], [sqlite, 't', 3000, [2999, 1, 'value 2999']]]) {
+      const table = await openTable(file, name)
+      const [row, col, text] = check
+      const value = (await table.fullValue(row, col)).text
+      if (table.numRows !== rows || value !== text) problems.push(`${file.format} in the image: ${table.numRows} rows, row ${row} is ${value}`)
+      file.dispose()
+    }
+  }
+  const ms = (performance.now() - t0).toFixed(0)
+  console.log(`${problems.length ? 'FAIL' : 'ok  '} ${fileName}: ${ok}/${Object.keys(expected).length} entries, ${ms} ms`)
+  for (const p of problems) console.log('     ' + p)
+  if (problems.length) failures++
+  await source.close()
 }
 
 if (perf) {

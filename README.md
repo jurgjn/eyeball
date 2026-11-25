@@ -10,7 +10,8 @@ were only added to) can be scrolled in full as soon as the index has been counte
 minutes for a table of tens of millions of rows on a network file system.
 
 Molecular structures, density maps and trajectories open in [Mol*](https://molstar.org), in all
-the formats it reads.
+the formats it reads. SquashFS images, and Apptainer/Singularity images, open as read-only
+folders in the explorer, and the files in them can be opened like any other.
 
 ![icon](media/icon.png)
 
@@ -60,6 +61,10 @@ Over Remote SSH, run it in the editor's integrated terminal, so that it installs
   Binary and gzipped files open in Mol* when double-clicked; text formats open in the text editor
   by default, and in Mol* with **Open with Eyeball** or **Reopen Editor With...**. Mol* follows
   the color theme, and the structure is reloaded when the file changes on disk.
+- SquashFS images (`.sqfs`, `.squashfs`, `.sqsh`, `.squash`) and Apptainer/Singularity images
+  (`.sif`) as read-only folders in the explorer, compressed with gzip, zstd or lz4 (not yet xz,
+  lzo or lzma). The files in them open in the text editor, in Eyeball, or in any other editor;
+  Parquet files and SQLite databases are read in place, without unpacking them.
 
 ## Usage
 
@@ -81,9 +86,16 @@ Molecular structures are shown with Mol*'s viewer and its controls: drag to rota
 zoom, click to select, and use the panels for representations, colors, measurements and more
 (see [Mol*'s documentation](https://molstar.org/viewer-docs/)).
 
+A SquashFS or Apptainer image opens to a page with its details. **Show in Explorer** (or
+**Open SquashFS Image as Folder** in the explorer's context menu) adds the image to the workspace
+as a folder; **Remove Folder from Workspace** removes it again. When a single folder is open, VS
+Code turns the window into a multi-root workspace for this, and reloads it. Quick Open (Ctrl+P)
+and search don't look inside images, as VS Code only offers them to extensions for files on disk.
+
 Commands:
 
 - **Eyeball: Open Data File or Molecular Structure...** opens files through a file dialog.
+- **Eyeball: Open SquashFS Image as Folder...** adds a SquashFS or Apptainer image to the explorer.
 - **Open with Eyeball** in the explorer context menu, for when another viewer or editor is the default.
 
 Settings:
@@ -151,6 +163,14 @@ and sends it to the webview, where Mol* reads it in the format of its file exten
 Parquet files and SQLite databases, the whole file is read, so very large trajectories may not
 fit into memory.
 
+SquashFS images are read directly from the [file format](https://dr-emann.github.io/squashfs/squashfs.html),
+like SQLite databases: a file system provider serves `squashfs:` URIs, which are the path of the
+image followed by the path inside it. Directories and inodes are read as they are needed, and
+only the data blocks that hold the bytes asked for are read and decompressed, with Node's zlib for
+gzip and zstd, and a small decoder for lz4. Symbolic links are followed inside the image, with
+absolute links taken from the root of the image, as in a container. In Apptainer/Singularity
+images, the SquashFS root file system is found from the image's partition table.
+
 Limitations: encrypted Parquet files and Parquet files whose column chunks live in other files
 are not supported. Because Eyeball has no SQL engine, SQLite views, virtual tables (e.g. FTS;
 their data is in the tables named after them) and the values of `VIRTUAL` generated columns
@@ -167,13 +187,14 @@ npm run package      # creates eyeball-<version>.vsix
 ```
 
 Tests compare the values read by Eyeball with pyarrow and Python's sqlite3 for a set of
-generated files:
+generated files, and the files in SquashFS images with the files they were made from:
 
 ```sh
 pip install -r test/requirements.txt
 python test/fixtures/make_fixtures.py /tmp/eyeball-data [--big]
 python test/fixtures/make_sqlite_fixtures.py /tmp/eyeball-data [--big]
 python test/fixtures/make_structure_fixtures.py /tmp/eyeball-data
+python test/fixtures/make_squashfs_fixtures.py /tmp/eyeball-data    # needs mksquashfs
 node test/check.mjs /tmp/eyeball-data [--perf]
 ```
 
@@ -194,21 +215,23 @@ node test/e2e.mjs http://127.0.0.1:3123 /tmp/eyeball-data /tmp/eyeball-shots
 
 ## Releasing
 
-`main` carries the next version with a `-dev` suffix (`0.2.0-dev`). The [CI workflow](.github/workflows/ci.yml)
+`main` carries the next version with a `-dev` suffix (`X.Y.Z-dev`). The [CI workflow](.github/workflows/ci.yml)
 tests and packages every push; the VSIX of each run is kept as an artifact, versioned with the run
-number (`0.2.0-dev.42`) so that each build installs as an update.
+number (`X.Y.Z-dev.42`) so that each build installs as an update.
 
-To make a release:
+To release version `X.Y.Z`:
 
 1. In `CHANGELOG.md` (in the [Keep a Changelog](https://keepachangelog.com/) format), rename
-   `## [Unreleased]` to the version and date, e.g. `## [0.2.0] - 2026-12-01`, and add an empty
-   `## [Unreleased]` above it. At the bottom, point `[Unreleased]` at `compare/v0.2.0...HEAD` and
-   add a link for the new version, `[0.2.0]: .../compare/v0.1.0...v0.2.0`.
-2. Publish a GitHub release with a new tag `vX.Y.Z`, e.g. `gh release create v0.2.0 --generate-notes`.
+   `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` and add an empty `## [Unreleased]` above it. At
+   the bottom, point `[Unreleased]` at `compare/vX.Y.Z...HEAD` and add a link for the new version,
+   `[X.Y.Z]: https://github.com/jurgjn/eyeball/compare/vPREVIOUS...vX.Y.Z`. Commit, and push `main`.
+2. Publish a GitHub release whose tag is on that commit, so that the VSIX has the changelog of the
+   release: `gh release create vX.Y.Z --title vX.Y.Z --generate-notes --target "$(git rev-parse HEAD)"`.
    CI takes the version from the tag, runs the tests, and attaches `eyeball-X.Y.Z.vsix` to the release.
-3. Set the version on `main` to the next `-dev` version.
+3. Set the version on `main` to the next `-dev` version, e.g. after 1.2.0,
+   `npm version 1.3.0-dev --no-git-tag-version`; commit and push.
 
-Releases marked as pre-releases on GitHub, or with a pre-release tag such as `v0.2.0-beta.1`, are
+Releases marked as pre-releases on GitHub, or with a pre-release tag such as `vX.Y.Z-beta.1`, are
 only attached to the GitHub release.
 
 Publishing to the extension registries is set up but off until their tokens are added as

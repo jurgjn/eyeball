@@ -1,6 +1,7 @@
 import * as vscode from 'vscode'
 import { DataEditorProvider, PARQUET_VIEW_TYPE, SQLITE_VIEW_TYPE } from './editor'
 import { stopReadHelper } from './reader/source'
+import { registerSquashfs } from './squashfs'
 import { STRUCTURE_EXTENSIONS, StructureEditorProvider, isStructureFile, structureViewTypeFor } from './structure'
 
 function viewTypeFor(uri: vscode.Uri): string {
@@ -12,6 +13,7 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     DataEditorProvider.register(context),
     StructureEditorProvider.register(context),
+    registerSquashfs(),
     vscode.commands.registerCommand('eyeball.openWith', (uri?: vscode.Uri) => {
       uri ??= vscode.window.activeTextEditor?.document.uri
       if (uri) return vscode.commands.executeCommand('vscode.openWith', uri, viewTypeFor(uri))

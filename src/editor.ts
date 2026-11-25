@@ -4,6 +4,7 @@ import { BLOCK_ROWS, type BlockRequest, type CellText, type HostMessage, type We
 import { LruCache } from './reader/lru'
 import { openTableFile } from './reader/open'
 import { DEFAULT_PARALLEL_READS, memorySource, openFileSource, type ByteSource } from './reader/source'
+import { SQUASHFS_SCHEME, openSquashfsSource } from './squashfs'
 import type { TableFile, TableReader } from './reader/types'
 
 export const PARQUET_VIEW_TYPE = 'eyeball.parquet'
@@ -67,9 +68,10 @@ class DataDocument implements vscode.CustomDocument {
   private async openSource(uri: vscode.Uri, optional = false): Promise<ByteSource | undefined> {
     let source: ByteSource
     try {
-      source = uri.scheme === 'file'
-        ? await openFileSource(uri.fsPath, { parallelReads: config('parallelReads', DEFAULT_PARALLEL_READS) })
-        : memorySource(await vscode.workspace.fs.readFile(uri))
+      if (uri.scheme === 'file') source = await openFileSource(uri.fsPath, { parallelReads: config('parallelReads', DEFAULT_PARALLEL_READS) })
+      // files in SquashFS images are read in place, like files on disk
+      else if (uri.scheme === SQUASHFS_SCHEME) source = await openSquashfsSource(uri)
+      else source = memorySource(await vscode.workspace.fs.readFile(uri))
     } catch (error) {
       if (optional) return undefined
       throw error

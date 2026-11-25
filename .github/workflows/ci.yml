@@ -41,11 +41,13 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: pip install -r test/requirements.txt
+      - run: sudo apt-get install -y squashfs-tools
       - name: Generate test files
         run: |
           python test/fixtures/make_fixtures.py "$RUNNER_TEMP/data"
           python test/fixtures/make_sqlite_fixtures.py "$RUNNER_TEMP/data"
-      - name: Compare values with pyarrow and sqlite3
+          python test/fixtures/make_squashfs_fixtures.py "$RUNNER_TEMP/data"
+      - name: Compare values with pyarrow and sqlite3, and SquashFS listings with mksquashfs's input
         run: node test/check.mjs "$RUNNER_TEMP/data"
       - name: Compare values, reading without the helper process
         run: node test/check.mjs "$RUNNER_TEMP/data" --parallel=4
@@ -68,7 +70,7 @@ jobs:
             # releases take their version from the tag: v1.2.3 -> 1.2.3
             version="${TAG#v}"
           else
-            # other builds get the run number, so that each build is an update: 0.2.0-dev.42
+            # other builds get the run number, so that each build is an update: X.Y.Z-dev.42
             version="$(node -p "require('./package.json').version").$GITHUB_RUN_NUMBER"
           fi
           npm version "$version" --no-git-tag-version --allow-same-version

@@ -5,7 +5,9 @@
 //   FOLDER  folder containing the fixtures (test/fixtures/make_fixtures.py --big, and
 //           make_sqlite_fixtures.py and make_structure_fixtures.py for those sections)
 //   OUTDIR  where screenshots are written
-//   SECTIONS  optional regex selecting sections (types, tall, wide, wide100k, nested, sqlite, structure, edge, dark)
+//   SECTIONS  optional regex selecting sections (types, tall, wide, wide100k, nested, sqlite, structure, squashfs,
+//             edge, dark); squashfs needs the images of make_squashfs_fixtures.py, and turns the
+//             window into a multi-root workspace
 import { chromium } from 'playwright'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -325,6 +327,80 @@ if (run('structure') && existsSync(join(folder, 'structures.expected.json'))) {
   check(atoms === 120 && reloaded, `structure: reloaded after a change on disk (${atoms} atoms, then ${await frame.locator('body').getAttribute('data-atoms')})`)
   rmSync(reloadFile)
   if (wroteSettings) rmSync(settings)
+}
+
+// ---- SquashFS images as folders ----
+if (run('squashfs') && existsSync(join(folder, 'tree-zstd.sqfs'))) {
+  const item = name => page.getByRole('treeitem', { name, exact: true }).first()
+  /** Open an image's page, and add the image to the explorer with its button. */
+  const addImage = async file => {
+    // the page may replace another one in preview mode, so wait for its title rather than a new webview
+    await page.keyboard.press('Control+P')
+    await page.waitForSelector('.quick-input-widget input', { state: 'visible' })
+    await page.keyboard.type(file)
+    await page.waitForTimeout(800)
+    await page.keyboard.press('Enter')
+    const frame = page.frameLocator('iframe.webview.ready:visible').frameLocator('#active-frame')
+    await frame.locator('h2', { hasText: file }).waitFor({ timeout: 30000 }).catch(async error => {
+      await shot(`squashfs-failed-${file}`)
+      throw error
+    })
+    const text = await frame.locator('body').innerText()
+    const button = frame.locator('#explorer')
+    if (await button.count()) await button.click()
+    return text
+  }
+  let text = await addImage('tree-zstd.sqfs')
+  check(/SquashFS image/.test(text) && /zstd/.test(text) && /1,028/.test(text), `squashfs: page ${JSON.stringify(text.slice(0, 120))}`)
+  // the window reloads as a multi-root workspace
+  await page.waitForURL(/workspace=/, { timeout: 30000 }).catch(() => {})
+  await page.waitForSelector('.monaco-workbench', { timeout: 60000 })
+  const root = item('tree-zstd.sqfs')
+  check(await root.waitFor({ timeout: 30000 }).then(() => true, () => false), 'squashfs: image added to the explorer')
+  // collapse the other folder, so that the image's items are in view
+  await item('eyeball-e2e').click()
+  await page.waitForTimeout(500)
+  if ((await root.getAttribute('aria-expanded')) !== 'true') await root.click()
+  check(await item('hello.txt').waitFor({ timeout: 15000 }).then(() => true, () => false), 'squashfs: root listed')
+  await shot('squashfs-explorer')
+  // a text file, read-only
+  await item('hello.txt').click()
+  await page.waitForTimeout(1500)
+  // the editor shows spaces as non-breaking spaces
+  const lines = (await page.locator('.monaco-editor .view-lines').allInnerTexts()).map(t => t.replace(/\u00a0/g, ' '))
+  check(lines.some(t => /hello squashfs/.test(t)), 'squashfs: text file opens')
+  // typing into it is refused
+  await page.locator('.monaco-editor .view-lines', { hasText: 'hello' }).first().click()
+  await page.keyboard.type('x')
+  const refused = await page.locator('.monaco-editor-overlaymessage', { hasText: /read-only/i }).waitFor({ timeout: 5000 }).then(() => true, () => false)
+  check(refused, 'squashfs: text file is read-only')
+  await shot('squashfs-hello')
+  // a symbolic link to a directory, and a directory of 1000 files
+  await item('link-to-dir').click()
+  check(await item('deep').waitFor({ timeout: 10000 }).then(() => true, () => false), 'squashfs: link to a directory expands')
+  await item('many').click()
+  check(await item('f0000.txt').waitFor({ timeout: 10000 }).then(() => true, () => false), 'squashfs: directory of 1000 files')
+  await item('many').click()
+  // Eyeball's viewers on files in the image
+  await item('data').click()
+  await item('table.parquet').click()
+  let frame = page.frameLocator('iframe.webview.ready:visible').frameLocator('#active-frame')
+  check(await settle(frame), 'squashfs: Parquet file opens')
+  let dims = await frame.locator('.dims').textContent()
+  check(dims?.startsWith('5,000 rows') ?? false, `squashfs: Parquet dims ${dims}`)
+  await item('db.sqlite').click()
+  frame = page.frameLocator('iframe.webview.ready:visible').frameLocator('#active-frame')
+  check(await settle(frame), 'squashfs: SQLite database opens')
+  dims = await frame.locator('.dims').textContent()
+  check(dims?.startsWith('3,000 rows') ?? false, `squashfs: SQLite dims ${dims}`)
+  await shot('squashfs-parquet')
+  // an Apptainer image, and one in a compression Eyeball can't read
+  await item('tree-zstd.sqfs').click()
+  text = await addImage('tree.sif')
+  check(/Apptainer/.test(text), `squashfs: SIF page ${JSON.stringify(text.slice(0, 120))}`)
+  check(await item('tree.sif').waitFor({ timeout: 30000 }).then(() => true, () => false), 'squashfs: SIF image added to the explorer')
+  text = await addImage('tree-xz.sqfs')
+  check(/xz, which Eyeball can't read/.test(text), `squashfs: xz page ${JSON.stringify(text.slice(0, 160))}`)
 }
 
 // ---- edge cases: empty file, not a Parquet file, file changing on disk ----
