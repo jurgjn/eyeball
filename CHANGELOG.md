@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-25
+
 ### Added
 
 - Viewer for molecular structures, volumes and trajectories, with [Mol*](https://molstar.org) 5.13:
@@ -39,5 +41,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Cell detail panel, copying ranges as tab-separated text.
 - Reloads when the file changes on disk.
 
-[Unreleased]: https://github.com/jurgjn/eyeball/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/jurgjn/eyeball/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/jurgjn/eyeball/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jurgjn/eyeball/releases/tag/v0.1.0
