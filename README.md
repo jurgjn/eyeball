@@ -157,18 +157,17 @@ node test/e2e.mjs http://127.0.0.1:3123 /tmp/eyeball-data /tmp/eyeball-shots
 
 ## Releasing
 
-`main` carries the next version with a `-dev` suffix (`0.1.0-dev`). The [CI workflow](.github/workflows/ci.yml)
+`main` carries the next version with a `-dev` suffix (`0.2.0-dev`). The [CI workflow](.github/workflows/ci.yml)
 tests and packages every push; the VSIX of each run is kept as an artifact, versioned with the run
-number (`0.1.0-dev.42`) so that each build installs as an update.
+number (`0.2.0-dev.42`) so that each build installs as an update.
 
 To make a release:
 
 1. In `CHANGELOG.md` (in the [Keep a Changelog](https://keepachangelog.com/) format), rename
-   `## [Unreleased]` to the version and date, e.g. `## [0.1.0] - 2026-12-01`, and add an empty
-   `## [Unreleased]` above it. At the bottom, point `[Unreleased]` at `compare/v0.1.0...HEAD` and
-   add a link for the new version (`releases/tag/v0.1.0` for the first release,
-   `compare/vPREVIOUS...v0.1.0` after that).
-2. Publish a GitHub release with a new tag `vX.Y.Z`, e.g. `gh release create v0.1.0 --generate-notes`.
+   `## [Unreleased]` to the version and date, e.g. `## [0.2.0] - 2026-12-01`, and add an empty
+   `## [Unreleased]` above it. At the bottom, point `[Unreleased]` at `compare/v0.2.0...HEAD` and
+   add a link for the new version, `[0.2.0]: .../compare/v0.1.0...v0.2.0`.
+2. Publish a GitHub release with a new tag `vX.Y.Z`, e.g. `gh release create v0.2.0 --generate-notes`.
    CI takes the version from the tag, runs the tests, and attaches `eyeball-X.Y.Z.vsix` to the release.
 3. Set the version on `main` to the next `-dev` version.
 

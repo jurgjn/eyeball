@@ -64,7 +64,7 @@ jobs:
             # releases take their version from the tag: v1.2.3 -> 1.2.3
             version="${TAG#v}"
           else
-            # other builds get the run number, so that each build is an update: 0.1.0-dev.42
+            # other builds get the run number, so that each build is an update: 0.2.0-dev.42
             version="$(node -p "require('./package.json').version").$GITHUB_RUN_NUMBER"
           fi
           npm version "$version" --no-git-tag-version --allow-same-version
