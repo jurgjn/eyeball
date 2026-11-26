@@ -13,6 +13,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   compressed with gzip, zstd or lz4: opening an image shows its details, and **Show in Explorer**
   or **Open SquashFS Image as Folder** adds it to the workspace. The files in images open like any
   other, and Parquet files and SQLite databases in them are read in place.
+- Zip archives (`.zip`) as read-only folders in the explorer, in the same way (**Open Zip Archive
+  as Folder**), also ZIP64 and self-extracting archives. Files stored without compression are read
+  in place; files compressed with deflate or zstd are decompressed into memory when they are opened.
 
 ## [0.2.0] - 2026-11-25
 

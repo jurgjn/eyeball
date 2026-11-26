@@ -1,7 +1,7 @@
 {
   "name": "eyeball",
   "displayName": "Eyeball: Parquet, SQLite and Molecular Structure Viewer",
-  "description": "Fast viewer for large Parquet files and SQLite databases, molecular structures with Mol*, and the files in SquashFS and Apptainer images. Scroll through millions of rows and thousands of columns; only what is on screen is read.",
+  "description": "Fast viewer for large Parquet files and SQLite databases, molecular structures with Mol*, and the files in zip archives, SquashFS and Apptainer images. Scroll through millions of rows and thousands of columns; only what is on screen is read.",
   "version": "0.3.0-dev",
   "publisher": "jurgjn",
   "license": "MIT",
@@ -30,6 +30,7 @@
     "protein",
     "molecular structure",
     "molstar",
+    "zip",
     "squashfs",
     "apptainer",
     "singularity"
@@ -56,7 +57,10 @@
     "onCommand:eyeball.openWith",
     "onFileSystem:squashfs",
     "onCustomEditor:eyeball.squashfs",
-    "onCommand:eyeball.openSquashfs"
+    "onCommand:eyeball.openSquashfs",
+    "onFileSystem:zipfile",
+    "onCustomEditor:eyeball.zip",
+    "onCommand:eyeball.openZip"
   ],
   "contributes": {
     "customEditors": [
@@ -313,6 +317,16 @@
           }
         ],
         "priority": "default"
+      },
+      {
+        "viewType": "eyeball.zip",
+        "displayName": "Eyeball Zip Archive",
+        "selector": [
+          {
+            "filenamePattern": "*.zip"
+          }
+        ],
+        "priority": "default"
       }
     ],
     "commands": [
@@ -330,6 +344,11 @@
         "command": "eyeball.openSquashfs",
         "title": "Open SquashFS Image as Folder...",
         "category": "Eyeball"
+      },
+      {
+        "command": "eyeball.openZip",
+        "title": "Open Zip Archive as Folder...",
+        "category": "Eyeball"
       }
     ],
     "menus": {
@@ -342,6 +361,11 @@
         {
           "command": "eyeball.openSquashfs",
           "when": "resourceScheme == file && resourceExtname =~ /^\\.(sqfs|squashfs|sqsh|squash|sif)$/i",
+          "group": "navigation@98"
+        },
+        {
+          "command": "eyeball.openZip",
+          "when": "resourceScheme == file && resourceExtname =~ /^\\.zip$/i",
           "group": "navigation@98"
         }
       ],

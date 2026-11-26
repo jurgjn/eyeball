@@ -3,6 +3,7 @@
 // inodes and data blocks are read and decompressed as they are needed, and cached.
 
 import * as zlib from 'node:zlib'
+import { ArchiveError, archiveFileSource, resolvePath, type Archive, type EntryKind } from './archive'
 import { compressors } from './compressors'
 import { LruCache, estimateSize } from './lru'
 import type { ByteSource } from './source'
@@ -14,8 +15,6 @@ const UNCOMPRESSED_BLOCK = 1 << 24
 const NO_FRAGMENT = 0xffffffff
 /** Raw reads of metadata are made in chunks of this size, as metadata blocks are small and consecutive. */
 const RAW_CHUNK = 256 << 10
-/** Symbolic links followed in resolving one path, at most (as in Linux). */
-const MAX_SYMLINKS = 40
 
 const COMPRESSION = ['', 'gzip', 'lzma', 'lzo', 'xz', 'lz4', 'zstd']
 
@@ -26,15 +25,6 @@ const SYMLINK = 3
 const EXT_DIR = 8
 const EXT_FILE = 9
 const EXT_SYMLINK = 10
-
-export type EntryKind = 'directory' | 'file' | 'symlink' | 'other'
-
-/** Errors with a code like those of Node's fs, so callers can map them. */
-export class SquashfsError extends Error {
-  constructor(readonly code: 'ENOENT' | 'ENOTDIR' | 'EISDIR' | 'ELOOP', message: string) {
-    super(message)
-  }
-}
 
 export interface Inode {
   kind: EntryKind
@@ -142,7 +132,7 @@ function lz4Block(input: Uint8Array, maxSize: number): Uint8Array {
   return out.subarray(0, o)
 }
 
-export class SquashfsImage {
+export class SquashfsImage implements Archive {
   readonly info: SquashfsInfo
   private readonly decompress: (data: Uint8Array, maxSize: number) => Uint8Array
   private readonly cache = new LruCache<unknown>(128 << 20)
@@ -331,7 +321,7 @@ export class SquashfsImage {
 
   /** The entries of a directory, by name. */
   entries(dir: Inode): Promise<Map<string, DirEntry>> {
-    if (dir.kind !== 'directory') return Promise.reject(new SquashfsError('ENOTDIR', 'not a directory'))
+    if (dir.kind !== 'directory') return Promise.reject(new ArchiveError('ENOTDIR', 'not a directory'))
     // the size of a directory counts 3 bytes that aren't stored; an empty directory has no
     // listing, and its position may be that of the next directory's listing
     const length = dir.size - 3
@@ -360,40 +350,14 @@ export class SquashfsImage {
 
   /**
    * The inode at a path (absolute within the image, '/'-separated). Symbolic links are followed
-   * in the directories on the way, and at the end unless followLast is false; links to absolute
-   * paths are taken to be relative to the root of the image, as in a container.
+   * (see resolvePath), with links to absolute paths taken from the root of the image.
    */
   async lookup(path: string, followLast = true): Promise<Inode> {
-    const root = await this.inode(this.rootRef)
-    let parents: Inode[] = []
-    let current = root
-    const pending = path.split('/').filter(Boolean).reverse()
-    let links = 0
-    while (pending.length) {
-      const name = pending.pop()!
-      if (name === '.') continue
-      if (name === '..') {
-        current = parents.pop() ?? root
-        continue
-      }
-      if (current.kind !== 'directory') throw new SquashfsError('ENOTDIR', `${path}: not a directory`)
-      const entry = (await this.entries(current)).get(name)
-      if (!entry) throw new SquashfsError('ENOENT', `${path}: no such file or directory`)
-      const inode = await this.inode(entry.ref)
-      if (inode.kind === 'symlink' && (pending.length || followLast)) {
-        if (++links > MAX_SYMLINKS) throw new SquashfsError('ELOOP', `${path}: too many levels of symbolic links`)
-        const target = inode.target!
-        if (target.startsWith('/')) {
-          parents = []
-          current = root
-        }
-        pending.push(...target.split('/').filter(Boolean).reverse())
-        continue
-      }
-      parents.push(current)
-      current = inode
+    const child = async (dir: Inode, name: string) => {
+      const entry = (await this.entries(dir)).get(name)
+      return entry && this.inode(entry.ref)
     }
-    return current
+    return resolvePath(await this.inode(this.rootRef), path, followLast, child, async link => link.target!)
   }
 
   // ---- file contents ----
@@ -456,7 +420,7 @@ export class SquashfsImage {
 
   /** Bytes [start, end) of a file. */
   async read(inode: Inode, start: number, end: number, background = false): Promise<Uint8Array> {
-    if (inode.kind === 'directory') throw new SquashfsError('EISDIR', 'is a directory')
+    if (inode.kind === 'directory') throw new ArchiveError('EISDIR', 'is a directory')
     if (inode.kind !== 'file') throw new Error('not a regular file')
     end = Math.min(end, inode.size)
     if (end <= start) return new Uint8Array(0)
@@ -484,6 +448,11 @@ export class SquashfsImage {
     await Promise.all(parts)
     return out
   }
+
+  /** A file in the image as a byte source, so that the Parquet and SQLite readers can read it in place. */
+  fileSource(inode: Inode): ByteSource {
+    return archiveFileSource(this, inode)
+  }
 }
 
 /** Decompresses blocks; directories and inodes are compressed too, so other compressions can't be read at all. */
@@ -498,17 +467,5 @@ function decompressorFor(compression: string): (data: Uint8Array, maxSize: numbe
       return (data, maxSize) => lz4Block(data, maxSize)
     default:
       throw new Error(`this image is compressed with ${compression}, which Eyeball can't read (it reads gzip, zstd and lz4)`)
-  }
-}
-
-/** A file in an image as a byte source, so that the Parquet and SQLite readers can read it in place. */
-export function squashfsFileSource(image: SquashfsImage, inode: Inode): ByteSource {
-  return {
-    size: inode.size,
-    async read(start, end, background) {
-      if (start < 0 || end > inode.size || start > end) throw new RangeError(`read [${start}, ${end}) outside file of ${inode.size} bytes`)
-      return image.read(inode, start, end, background)
-    },
-    async close() {},
   }
 }

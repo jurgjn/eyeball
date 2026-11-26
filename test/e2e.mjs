@@ -3,14 +3,14 @@
 // Usage: node test/e2e.mjs URL FOLDER OUTDIR [SECTIONS]
 //   URL     openvscode-server with the extension installed, e.g. http://127.0.0.1:3123
 //   FOLDER  folder containing the fixtures (test/fixtures/make_fixtures.py --big, and
-//           make_sqlite_fixtures.py and make_structure_fixtures.py for those sections)
+//           make_sqlite_fixtures.py, make_structure_fixtures.py and make_archive_fixtures.py for those sections)
 //   OUTDIR  where screenshots are written
 //   SECTIONS  optional regex selecting sections (types, tall, wide, wide100k, nested, sqlite, structure, squashfs,
-//             edge, dark); squashfs needs the images of make_squashfs_fixtures.py, and turns the
-//             window into a multi-root workspace
+//             zip, edge, dark); squashfs and zip need the archives of make_archive_fixtures.py, and turn
+//             the window into a multi-root workspace
 import { chromium } from 'playwright'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 
 const [url = 'http://127.0.0.1:3123', folder = '/tmp/eyeball-data', outDir = '/tmp/eyeball-shots', sections] = process.argv.slice(2)
 const run = name => !sections || new RegExp(sections).test(name)
@@ -329,46 +329,58 @@ if (run('structure') && existsSync(join(folder, 'structures.expected.json'))) {
   if (wroteSettings) rmSync(settings)
 }
 
-// ---- SquashFS images as folders ----
-if (run('squashfs') && existsSync(join(folder, 'tree-zstd.sqfs'))) {
-  const item = name => page.getByRole('treeitem', { name, exact: true }).first()
-  /** Open an image's page, and add the image to the explorer with its button. */
-  const addImage = async file => {
-    // the page may replace another one in preview mode, so wait for its title rather than a new webview
-    await page.keyboard.press('Control+P')
-    await page.waitForSelector('.quick-input-widget input', { state: 'visible' })
-    await page.keyboard.type(file)
-    await page.waitForTimeout(800)
-    await page.keyboard.press('Enter')
-    const frame = page.frameLocator('iframe.webview.ready:visible').frameLocator('#active-frame')
-    await frame.locator('h2', { hasText: file }).waitFor({ timeout: 30000 }).catch(async error => {
-      await shot(`squashfs-failed-${file}`)
-      throw error
-    })
-    const text = await frame.locator('body').innerText()
-    const button = frame.locator('#explorer')
-    if (await button.count()) await button.click()
-    return text
-  }
-  let text = await addImage('tree-zstd.sqfs')
-  check(/SquashFS image/.test(text) && /zstd/.test(text) && /1,028/.test(text), `squashfs: page ${JSON.stringify(text.slice(0, 120))}`)
-  // the window reloads as a multi-root workspace
+// ---- archives and images as folders ----
+const item = name => page.getByRole('treeitem', { name, exact: true }).first()
+/** Open the page of an archive or image, and add it to the explorer with its button; returns the page's text. */
+async function addArchive(file) {
+  // the page may replace another one in preview mode, so wait for its title rather than a new webview;
+  // keys go to a webview that has the focus (after a click on a page's button), so first take it away
+  await page.evaluate(() => document.activeElement?.blur())
+  await page.keyboard.press('Control+P')
+  await page.waitForSelector('.quick-input-widget input', { state: 'visible' }).catch(async error => {
+    await shot(`archive-failed-quick-open-${file}`)
+    throw error
+  })
+  await page.keyboard.type(file)
+  await page.waitForTimeout(800)
+  await page.keyboard.press('Enter')
+  const frame = page.frameLocator('iframe.webview.ready:visible').frameLocator('#active-frame')
+  await frame.locator('h2', { hasText: file }).waitFor({ timeout: 30000 }).catch(async error => {
+    await shot(`archive-failed-${file}`)
+    throw error
+  })
+  const text = await frame.locator('body').innerText()
+  const button = frame.locator('#explorer')
+  if (await button.count()) await button.click()
+  return text
+}
+/** Wait for an archive added to the explorer (the first one reloads the window as a multi-root workspace), and expand it alone. */
+async function expandArchive(name) {
   await page.waitForURL(/workspace=/, { timeout: 30000 }).catch(() => {})
   await page.waitForSelector('.monaco-workbench', { timeout: 60000 })
-  const root = item('tree-zstd.sqfs')
-  check(await root.waitFor({ timeout: 30000 }).then(() => true, () => false), 'squashfs: image added to the explorer')
-  // collapse the other folder, so that the image's items are in view
-  await item('eyeball-e2e').click()
+  const root = item(name)
+  if (!await root.waitFor({ timeout: 30000 }).then(() => true, () => false)) return false
+  // collapse the other folders, so that the archive's items are in view
+  for (const other of [basename(folder), 'tree-zstd.sqfs', 'tree.sif', 'tree-deflate.zip', 'special.zip']) {
+    if (other !== name && await item(other).getAttribute('aria-expanded', { timeout: 1000 }).catch(() => null) === 'true') await item(other).click()
+  }
   await page.waitForTimeout(500)
   if ((await root.getAttribute('aria-expanded')) !== 'true') await root.click()
+  return true
+}
+/** The lines of the text editor (which shows spaces as non-breaking spaces). */
+const editorLines = async () => (await page.locator('.monaco-editor .view-lines').allInnerTexts()).map(t => t.replace(/\u00a0/g, ' '))
+
+if (run('squashfs') && existsSync(join(folder, 'tree-zstd.sqfs'))) {
+  let text = await addArchive('tree-zstd.sqfs')
+  check(/SquashFS image/.test(text) && /zstd/.test(text) && /1,028/.test(text), `squashfs: page ${JSON.stringify(text.slice(0, 120))}`)
+  check(await expandArchive('tree-zstd.sqfs'), 'squashfs: image added to the explorer')
   check(await item('hello.txt').waitFor({ timeout: 15000 }).then(() => true, () => false), 'squashfs: root listed')
   await shot('squashfs-explorer')
   // a text file, read-only
   await item('hello.txt').click()
   await page.waitForTimeout(1500)
-  // the editor shows spaces as non-breaking spaces
-  const lines = (await page.locator('.monaco-editor .view-lines').allInnerTexts()).map(t => t.replace(/\u00a0/g, ' '))
-  check(lines.some(t => /hello squashfs/.test(t)), 'squashfs: text file opens')
+  check((await editorLines()).some(t => /hello archives/.test(t)), 'squashfs: text file opens')
   // typing into it is refused
   await page.locator('.monaco-editor .view-lines', { hasText: 'hello' }).first().click()
   await page.keyboard.type('x')
@@ -396,11 +408,55 @@ if (run('squashfs') && existsSync(join(folder, 'tree-zstd.sqfs'))) {
   await shot('squashfs-parquet')
   // an Apptainer image, and one in a compression Eyeball can't read
   await item('tree-zstd.sqfs').click()
-  text = await addImage('tree.sif')
+  text = await addArchive('tree.sif')
   check(/Apptainer/.test(text), `squashfs: SIF page ${JSON.stringify(text.slice(0, 120))}`)
   check(await item('tree.sif').waitFor({ timeout: 30000 }).then(() => true, () => false), 'squashfs: SIF image added to the explorer')
-  text = await addImage('tree-xz.sqfs')
+  text = await addArchive('tree-xz.sqfs')
   check(/xz, which Eyeball can't read/.test(text), `squashfs: xz page ${JSON.stringify(text.slice(0, 160))}`)
+}
+
+// ---- zip archives as folders ----
+if (run('zip') && existsSync(join(folder, 'tree-deflate.zip'))) {
+  let text = await addArchive('tree-deflate.zip')
+  check(/Zip archive/.test(text) && /deflate \(/.test(text) && /1,028/.test(text), `zip: page ${JSON.stringify(text.slice(0, 160))}`)
+  await shot('zip-page')
+  check(await expandArchive('tree-deflate.zip'), 'zip: archive added to the explorer')
+  check(await item('hello.txt').waitFor({ timeout: 15000 }).then(() => true, () => false), 'zip: root listed')
+  await item('hello.txt').click()
+  await page.waitForTimeout(1500)
+  check((await editorLines()).some(t => /hello archives/.test(t)), 'zip: text file opens')
+  // a symbolic link to a directory, and a directory of 1000 files
+  await item('link-to-dir').click()
+  check(await item('deep').waitFor({ timeout: 10000 }).then(() => true, () => false), 'zip: link to a directory expands')
+  await item('many').click()
+  check(await item('f0000.txt').waitFor({ timeout: 10000 }).then(() => true, () => false), 'zip: directory of 1000 files')
+  await item('many').click()
+  // Eyeball's viewers on compressed files in the archive
+  await item('data').click()
+  await item('table.parquet').click()
+  let frame = page.frameLocator('iframe.webview.ready:visible').frameLocator('#active-frame')
+  check(await settle(frame), 'zip: Parquet file opens')
+  let dims = await frame.locator('.dims').textContent()
+  check(dims?.startsWith('5,000 rows') ?? false, `zip: Parquet dims ${dims}`)
+  await item('db.sqlite').click()
+  frame = page.frameLocator('iframe.webview.ready:visible').frameLocator('#active-frame')
+  check(await settle(frame), 'zip: SQLite database opens')
+  dims = await frame.locator('.dims').textContent()
+  check(dims?.startsWith('3,000 rows') ?? false, `zip: SQLite dims ${dims}`)
+  await shot('zip-sqlite')
+  // an archive with files that can't be read, after other data, with a comment
+  text = await addArchive('special.zip')
+  check(/after 230 bytes of other data/.test(text) && /a comment ✓/.test(text) && /2 files can't be read/.test(text),
+    `zip: special page ${JSON.stringify(text.slice(0, 400))}`)
+  await shot('zip-special-page')
+  check(await expandArchive('special.zip'), 'zip: special archive added to the explorer')
+  await item('zstd.txt').click()
+  await page.waitForTimeout(1500)
+  check((await editorLines()).some(t => /compressible text/.test(t)), 'zip: zstd file opens')
+  await item('bzip2.txt').click()
+  const refused = await page.getByText(/compressed with bzip2, which Eyeball can't read/).first().waitFor({ timeout: 10000 }).then(() => true, () => false)
+  check(refused, 'zip: a bzip2 file is refused with a message')
+  await shot('zip-bzip2')
 }
 
 // ---- edge cases: empty file, not a Parquet file, file changing on disk ----

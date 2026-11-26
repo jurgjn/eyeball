@@ -10,8 +10,8 @@ were only added to) can be scrolled in full as soon as the index has been counte
 minutes for a table of tens of millions of rows on a network file system.
 
 Molecular structures, density maps and trajectories open in [Mol*](https://molstar.org), in all
-the formats it reads. SquashFS images, and Apptainer/Singularity images, open as read-only
-folders in the explorer, and the files in them can be opened like any other.
+the formats it reads. Zip archives, SquashFS images and Apptainer/Singularity images open as
+read-only folders in the explorer, and the files in them can be opened like any other.
 
 ![icon](media/icon.png)
 
@@ -65,6 +65,10 @@ Over Remote SSH, run it in the editor's integrated terminal, so that it installs
   (`.sif`) as read-only folders in the explorer, compressed with gzip, zstd or lz4 (not yet xz,
   lzo or lzma). The files in them open in the text editor, in Eyeball, or in any other editor;
   Parquet files and SQLite databases are read in place, without unpacking them.
+- Zip archives (`.zip`) as read-only folders in the explorer, also ZIP64 and self-extracting
+  archives, with files stored or compressed with deflate or zstd (not bzip2, lzma or xz, nor
+  encrypted files). Files stored without compression (`zip -0`) are read in place, like files in
+  SquashFS images; compressed files are decompressed into memory when they are opened.
 
 ## Usage
 
@@ -86,15 +90,17 @@ Molecular structures are shown with Mol*'s viewer and its controls: drag to rota
 zoom, click to select, and use the panels for representations, colors, measurements and more
 (see [Mol*'s documentation](https://molstar.org/viewer-docs/)).
 
-A SquashFS or Apptainer image opens to a page with its details. **Show in Explorer** (or
-**Open SquashFS Image as Folder** in the explorer's context menu) adds the image to the workspace
-as a folder; **Remove Folder from Workspace** removes it again. When a single folder is open, VS
-Code turns the window into a multi-root workspace for this, and reloads it. Quick Open (Ctrl+P)
-and search don't look inside images, as VS Code only offers them to extensions for files on disk.
+A zip archive, SquashFS image or Apptainer image opens to a page with its details. **Show in
+Explorer** (or **Open Zip Archive as Folder** and **Open SquashFS Image as Folder** in the
+explorer's context menu) adds it to the workspace as a folder; **Remove Folder from Workspace**
+removes it again. When a single folder is open, VS Code turns the window into a multi-root
+workspace for this, and reloads it. Quick Open (Ctrl+P) and search don't look inside archives and
+images, as VS Code only offers them to extensions for files on disk.
 
 Commands:
 
 - **Eyeball: Open Data File or Molecular Structure...** opens files through a file dialog.
+- **Eyeball: Open Zip Archive as Folder...** adds a zip archive to the explorer.
 - **Eyeball: Open SquashFS Image as Folder...** adds a SquashFS or Apptainer image to the explorer.
 - **Open with Eyeball** in the explorer context menu, for when another viewer or editor is the default.
 
@@ -171,6 +177,15 @@ gzip and zstd, and a small decoder for lz4. Symbolic links are followed inside t
 absolute links taken from the root of the image, as in a container. In Apptainer/Singularity
 images, the SquashFS root file system is found from the image's partition table.
 
+Zip archives are served in the same way, as `zipfile:` URIs (`zip:` is taken by Yarn's ZipFS
+extension). The central directory, the list of files at the end of an archive, is read when the
+archive is opened. Files stored without compression are read in place. A compressed file can only
+be decompressed from its start, so it is decompressed in full when it is opened, with Node's zlib,
+and kept in memory while it is open (up to 2 GB per file). To read large Parquet files and SQLite
+databases in place, store them without compression (`zip -n .parquet:.sqlite ...`; Parquet files
+are compressed already). Names are read as UTF-8, or in code page 437 when they aren't valid UTF-8,
+and symbolic links from Unix are followed as in images.
+
 Limitations: encrypted Parquet files and Parquet files whose column chunks live in other files
 are not supported. Because Eyeball has no SQL engine, SQLite views, virtual tables (e.g. FTS;
 their data is in the tables named after them) and the values of `VIRTUAL` generated columns
@@ -187,14 +202,15 @@ npm run package      # creates eyeball-<version>.vsix
 ```
 
 Tests compare the values read by Eyeball with pyarrow and Python's sqlite3 for a set of
-generated files, and the files in SquashFS images with the files they were made from:
+generated files, and the files in zip archives and SquashFS images with the files they were made
+from:
 
 ```sh
 pip install -r test/requirements.txt
 python test/fixtures/make_fixtures.py /tmp/eyeball-data [--big]
 python test/fixtures/make_sqlite_fixtures.py /tmp/eyeball-data [--big]
 python test/fixtures/make_structure_fixtures.py /tmp/eyeball-data
-python test/fixtures/make_squashfs_fixtures.py /tmp/eyeball-data    # needs mksquashfs
+python test/fixtures/make_archive_fixtures.py /tmp/eyeball-data     # SquashFS images need mksquashfs
 node test/check.mjs /tmp/eyeball-data [--perf]
 ```
 
@@ -205,7 +221,7 @@ SQLite); `--perf` times random access on them. `--parallel=N` sets the reads at 
 `test/e2e.mjs` drives the packaged extension in [openvscode-server](https://github.com/gitpod-io/openvscode-server)
 with Playwright (`npm install --no-save playwright`): it opens the fixtures, scrolls, jumps, filters
 columns, copies and checks the results, opens the molecular structures and checks what Mol* shows,
-and saves screenshots.
+browses zip archives and SquashFS images in the explorer, and saves screenshots.
 
 ```sh
 openvscode-server --install-extension eyeball-*.vsix

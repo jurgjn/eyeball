@@ -46,8 +46,8 @@ jobs:
         run: |
           python test/fixtures/make_fixtures.py "$RUNNER_TEMP/data"
           python test/fixtures/make_sqlite_fixtures.py "$RUNNER_TEMP/data"
-          python test/fixtures/make_squashfs_fixtures.py "$RUNNER_TEMP/data"
-      - name: Compare values with pyarrow and sqlite3, and SquashFS listings with mksquashfs's input
+          python test/fixtures/make_archive_fixtures.py "$RUNNER_TEMP/data"
+      - name: Compare values with pyarrow and sqlite3, and archives with the files they were made from
         run: node test/check.mjs "$RUNNER_TEMP/data"
       - name: Compare values, reading without the helper process
         run: node test/check.mjs "$RUNNER_TEMP/data" --parallel=4

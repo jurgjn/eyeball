@@ -1,10 +1,10 @@
 import * as path from 'node:path'
 import * as vscode from 'vscode'
+import { isArchiveUri, openArchiveSource } from './archive'
 import { BLOCK_ROWS, type BlockRequest, type CellText, type HostMessage, type WebviewMessage } from './protocol'
 import { LruCache } from './reader/lru'
 import { openTableFile } from './reader/open'
 import { DEFAULT_PARALLEL_READS, memorySource, openFileSource, type ByteSource } from './reader/source'
-import { SQUASHFS_SCHEME, openSquashfsSource } from './squashfs'
 import type { TableFile, TableReader } from './reader/types'
 
 export const PARQUET_VIEW_TYPE = 'eyeball.parquet'
@@ -69,8 +69,8 @@ class DataDocument implements vscode.CustomDocument {
     let source: ByteSource
     try {
       if (uri.scheme === 'file') source = await openFileSource(uri.fsPath, { parallelReads: config('parallelReads', DEFAULT_PARALLEL_READS) })
-      // files in SquashFS images are read in place, like files on disk
-      else if (uri.scheme === SQUASHFS_SCHEME) source = await openSquashfsSource(uri)
+      // files in archives and images are read in place, like files on disk (compressed files in zip archives are decompressed)
+      else if (isArchiveUri(uri)) source = await openArchiveSource(uri)
       else source = memorySource(await vscode.workspace.fs.readFile(uri))
     } catch (error) {
       if (optional) return undefined
