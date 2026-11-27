@@ -7,6 +7,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-27
+
 ### Added
 
 - SquashFS images and Apptainer/Singularity images (`.sif`) as read-only folders in the explorer,
@@ -51,6 +53,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Cell detail panel, copying ranges as tab-separated text.
 - Reloads when the file changes on disk.
 
-[Unreleased]: https://github.com/jurgjn/eyeball/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/jurgjn/eyeball/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/jurgjn/eyeball/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/jurgjn/eyeball/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/jurgjn/eyeball/releases/tag/v0.1.0
