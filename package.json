@@ -2,7 +2,7 @@
   "name": "eyeball",
   "displayName": "Eyeball: Parquet, SQLite and Molecular Structure Viewer",
   "description": "Fast viewer for large Parquet files and SQLite databases, molecular structures with Mol*, and the files in zip archives, SquashFS and Apptainer images. Scroll through millions of rows and thousands of columns; only what is on screen is read.",
-  "version": "0.3.0-dev",
+  "version": "0.4.0-dev",
   "publisher": "jurgjn",
   "license": "MIT",
   "icon": "media/icon.png",
