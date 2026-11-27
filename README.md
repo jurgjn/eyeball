@@ -233,22 +233,27 @@ node test/e2e.mjs http://127.0.0.1:3123 /tmp/eyeball-data /tmp/eyeball-shots
 
 `main` carries the next version with a `-dev` suffix (`X.Y.Z-dev`). The [CI workflow](.github/workflows/ci.yml)
 tests and packages every push; the VSIX of each run is kept as an artifact, versioned with the run
-number (`X.Y.Z-dev.42`) so that each build installs as an update.
+number (`X.Y.Z-dev.42`) so that each build installs as an update. Pushing a version tag (`vX.Y.Z`)
+releases that version.
 
 To release version `X.Y.Z`:
 
 1. In `CHANGELOG.md` (in the [Keep a Changelog](https://keepachangelog.com/) format), rename
    `## [Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD` and add an empty `## [Unreleased]` above it. At
    the bottom, point `[Unreleased]` at `compare/vX.Y.Z...HEAD` and add a link for the new version,
-   `[X.Y.Z]: https://github.com/jurgjn/eyeball/compare/vPREVIOUS...vX.Y.Z`. Commit, and push `main`.
-2. Publish a GitHub release whose tag is on that commit, so that the VSIX has the changelog of the
-   release: `gh release create vX.Y.Z --title vX.Y.Z --generate-notes --target "$(git rev-parse HEAD)"`.
-   CI takes the version from the tag, runs the tests, and attaches `eyeball-X.Y.Z.vsix` to the release.
-3. Set the version on `main` to the next `-dev` version, e.g. after 1.2.0,
-   `npm version 1.3.0-dev --no-git-tag-version`; commit and push.
+   `[X.Y.Z]: https://github.com/jurgjn/eyeball/compare/vPREVIOUS...vX.Y.Z`. Commit, and tag the
+   commit: `git tag -a vX.Y.Z -m "Eyeball X.Y.Z"`.
+2. Set the version on `main` to the next `-dev` version, e.g. after 1.2.0,
+   `npm version 1.3.0-dev --no-git-tag-version`, and commit.
+3. Push the commits and the tag: `git push origin main vX.Y.Z`. CI takes the version from
+   the tag, runs the tests, and makes the GitHub release, with the version's section of
+   `CHANGELOG.md` as its notes and `eyeball-X.Y.Z.vsix` attached. If `CHANGELOG.md` has no section
+   for the version, the release fails, and can be made by pushing the tag again once it has one
+   (`git tag -f -a vX.Y.Z -m "Eyeball X.Y.Z" <commit>`, `git push -f origin vX.Y.Z`).
 
-Releases marked as pre-releases on GitHub, or with a pre-release tag such as `vX.Y.Z-beta.1`, are
-only attached to the GitHub release.
+Tags with a pre-release suffix, such as `vX.Y.Z-beta.1`, make pre-releases on GitHub (with notes
+generated from the commits if `CHANGELOG.md` has no section for them), and aren't published to the
+extension registries.
 
 Publishing to the extension registries is set up but off until their tokens are added as
 repository secrets (**Settings > Secrets and variables > Actions**); from then on, releases are
